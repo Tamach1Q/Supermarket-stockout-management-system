@@ -3,9 +3,9 @@ import json
 import time
 import pandas as pd
 import threading
-import yaml  # 設定ファイル読み込み用 (pip install PyYAML)
+import ast
+from typing import Optional, Tuple
 from flask import Flask, render_template, request, jsonify
-from PIL import Image # 画像サイズ取得用
 
 app = Flask(__name__)
 
@@ -14,36 +14,111 @@ DATA_DIR = "./store_data"
 IMG_DIR = os.path.join(DATA_DIR, "images")
 LOG_FILE = os.path.join(DATA_DIR, "tracking.csv")
 MAP_YAML_FILE = os.path.join(DATA_DIR, "map.yaml") # 地図の設定ファイル
+MAP_PNG_FILE = os.path.join("static", "map.png")   # Web表示用の地図画像
 AREAS_FILE = "areas.json" # エリア設定の保存先
 
 # 監視状態
 notifications = [] # 画面に表示する通知リスト
 processed_files = set()
 
+# --- ユーティリティ ---
+def _parse_map_yaml_simple(path: str) -> Tuple[Optional[float], Optional[list]]:
+    """
+    map.yaml から必要最小限の値だけ抜き出す簡易パーサー。
+    - 依存追加なしで動かすため PyYAML は使わない
+    TODO(後で修正): YAMLが複雑化するなら PyYAML に切り替え
+    """
+    resolution = None
+    origin = None
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("resolution:"):
+                    value = line.split(":", 1)[1].strip()
+                    if "#" in value:
+                        value = value.split("#", 1)[0].strip()
+                    try:
+                        resolution = float(value)
+                    except Exception:
+                        pass
+                elif line.startswith("origin:"):
+                    value = line.split(":", 1)[1].strip()
+                    if "#" in value:
+                        value = value.split("#", 1)[0].strip()
+                    try:
+                        parsed = ast.literal_eval(value)
+                        if isinstance(parsed, (list, tuple)) and len(parsed) >= 2:
+                            origin = list(parsed)
+                    except Exception:
+                        pass
+    except Exception:
+        return None, None
+
+    return resolution, origin
+
+def _get_png_size(path: str) -> Tuple[int, int]:
+    """PNGの幅/高さを依存なしで取得（失敗時は(0,0)）"""
+    try:
+        with open(path, "rb") as f:
+            header = f.read(24)
+        if len(header) < 24:
+            return 0, 0
+        # PNG signature
+        if header[:8] != b"\x89PNG\r\n\x1a\n":
+            return 0, 0
+        # IHDR chunk data begins at offset 16: width(4) height(4)
+        width = int.from_bytes(header[16:20], "big")
+        height = int.from_bytes(header[20:24], "big")
+        return width, height
+    except Exception:
+        return 0, 0
+
 # --- 座標変換クラス ---
 class MapConverter:
     def __init__(self):
-        self.resolution = 0.05  # デフォルト値 (1px = 5cm)
-        self.origin = [0.0, 0.0, 0.0]
-        self.height = 0
-        self.load_yaml()
+        # TODO(ダミー): map.yaml がまだ無い環境でも動くように仮値を入れておく
+        # 後でJetson側の地図が用意できたら map.yaml を回収してこの値が自動反映されます
+        self.resolution = 0.05  # 1px=5cm想定の仮値
+        self.origin = [0.0, 0.0, 0.0]  # [x, y, theta] の仮値
 
-    def load_yaml(self):
-        """map.yamlを読み込んで設定を更新"""
-        if os.path.exists(MAP_YAML_FILE):
-            try:
-                with open(MAP_YAML_FILE, 'r') as f:
-                    data = yaml.safe_load(f)
-                    self.resolution = data['resolution']
-                    self.origin = data['origin'] # [x, y, theta]
-                    
-                    # 画像の高さを取得（Y軸反転のため必要）
-                    # static/map.png があればそのサイズを使う
-                    if os.path.exists("static/map.png"):
-                        with Image.open("static/map.png") as img:
-                            self.width, self.height = img.size
-            except Exception as e:
-                print(f"YAML読み込みエラー: {e}")
+        self.width = 0
+        self.height = 0
+
+        self._yaml_mtime: Optional[float] = None
+        self._png_mtime: Optional[float] = None
+        self.reload_if_needed(force=True)
+
+    def reload_if_needed(self, force: bool = False) -> None:
+        """map.yaml / map.png が更新されていたら読み直す（毎秒呼んでも軽いように）"""
+        yaml_mtime = os.path.getmtime(MAP_YAML_FILE) if os.path.exists(MAP_YAML_FILE) else None
+        png_mtime = os.path.getmtime(MAP_PNG_FILE) if os.path.exists(MAP_PNG_FILE) else None
+
+        if force or yaml_mtime != self._yaml_mtime:
+            if yaml_mtime is None:
+                self._yaml_mtime = None
+            else:
+                resolution, origin = _parse_map_yaml_simple(MAP_YAML_FILE)
+                if resolution is not None:
+                    self.resolution = resolution
+                if origin is not None:
+                    # thetaは使っていないが保存しておく
+                    if len(origin) == 2:
+                        origin = [origin[0], origin[1], 0.0]
+                    self.origin = origin[:3]
+                self._yaml_mtime = yaml_mtime
+
+        if force or png_mtime != self._png_mtime:
+            if png_mtime is None:
+                self._png_mtime = None
+            else:
+                w, h = _get_png_size(MAP_PNG_FILE)
+                if w > 0 and h > 0:
+                    self.width, self.height = w, h
+                self._png_mtime = png_mtime
 
     def world_to_pixel(self, world_x, world_y):
         """
@@ -51,8 +126,8 @@ class MapConverter:
         式: pixel = (world - origin) / resolution
         """
         # 1. 解像度で割る
-        px = (world_x - self.origin[0]) / self.resolution
-        py = (world_y - self.origin[1]) / self.resolution
+        px = (world_x - float(self.origin[0])) / float(self.resolution)
+        py = (world_y - float(self.origin[1])) / float(self.resolution)
         
         # 2. Y軸を反転させる (画像は左上が0,0、地図は左下が0,0のため)
         if self.height > 0:
@@ -70,8 +145,8 @@ def monitoring_task():
     print("👀 監視システム起動中...")
     
     while True:
-        # 定期的に地図設定を再読み込み（SLAMで地図が更新される可能性があるため）
-        converter.load_yaml()
+        # 地図設定を再読み込み（SLAMで地図が更新される可能性があるため）
+        converter.reload_if_needed()
 
         try:
             # 1. 画像フォルダを見る

@@ -41,6 +41,7 @@
 <script>
     const canvas = document.getElementById('mapCanvas');
     const ctx = canvas.getContext('2d');
+    const statusEl = document.getElementById('status');
     let areas = [];
     let isDrawing = false, startX, startY;
 
@@ -54,7 +55,8 @@
     function mapSrc() {
         // file:// で直接開かれた場合は相対パスに寄せる（見えるだけでも見えるように）
         if (location.protocol === 'file:') return '../static/map.png';
-        return '/static/map.png';
+        // ブラウザキャッシュ回避のため、クエリを付けて毎回新しいURLにする
+        return '/static/map.png?t=' + Date.now();
     }
 
     mapImg.onload = () => { useFallbackMap = false; draw(); };
@@ -63,6 +65,14 @@
 
     // 初期描画（画像ロード前でも真っ白にならないように）
     draw();
+
+    // 地図はサーバ側で更新される可能性があるため定期リロード
+    // TODO(後で修正): 更新頻度は運用に合わせて調整してください
+    setInterval(() => {
+        // file:// の場合はAPIも使えないので、ここでは更新しない
+        if (location.protocol === 'file:') return;
+        mapImg.src = mapSrc();
+    }, 10000);
 
     // --- キャンバス操作 ---
     canvas.addEventListener('mousedown', e => {
@@ -107,6 +117,7 @@
         }
 
         if (useFallbackMap) {
+            if (statusEl) statusEl.textContent = '地図未取得（簡易マップ表示中）';
             // 画像が無い/壊れている場合の簡易マップ（デモ用）
             ctx.fillStyle = '#f0f0f0';
             ctx.fillRect(0, 0, 600, 400);
@@ -123,6 +134,8 @@
             ctx.fillStyle = '#666';
             ctx.font = '12px Arial';
             ctx.fillText('※ map.png が読み込めないため簡易表示中（app.py 経由で開く/ generate_dummy.py で生成）', 10, 390);
+        } else {
+            if (statusEl) statusEl.textContent = '監視中...';
         }
         
         areas.forEach(a => {
