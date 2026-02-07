@@ -4,23 +4,28 @@ import os
 import time
 import datetime
 import sys
+from PIL import Image  # 画像変換用 (pip install Pillow)
 
 # ================= 設定エリア =================
 # ※ここを実際のロボットのIPアドレスに書き換えてください
 ROBOT_CONFIG = {
-    # 自動走行ロボット
+    # 自動走行ロボット (Xavier)
     "xavier": {
         "host": "192.168.1.10",   # IPアドレス
         "user": "jetson",         # ユーザー名
         "pass": "jetson",         # パスワード
-        "remote_csv": "/home/jetson/logs/tracking.csv" # 向こうのファイルの場所
+        "remote_csv": "/home/jetson/logs/tracking.csv", # ログファイルの場所
+        
+        # ★追加: SLAMが出力した地図ファイルの場所
+        "remote_map_yaml": "/home/jetson/maps/map.yaml",
+        "remote_map_pgm": "/home/jetson/maps/map.pgm" 
     },
-    # Webカメラロボット
+    # Webカメラロボット (TX2)
     "tx2": {
         "host": "192.168.1.11",   # IPアドレス
         "user": "jetson",         # ユーザー名
         "pass": "jetson",         # パスワード
-        "remote_img_dir": "/home/jetson/images/"       # 向こうの画像フォルダ
+        "remote_img_dir": "/home/jetson/images/"       # 画像フォルダ
     }
 }
 
@@ -28,9 +33,11 @@ ROBOT_CONFIG = {
 LOCAL_DIR = "./store_data"
 LOCAL_IMG_DIR = os.path.join(LOCAL_DIR, "images")
 LOCAL_CSV = os.path.join(LOCAL_DIR, "tracking.csv")
+STATIC_DIR = "./static"  # Web表示用画像の保存先
 
 # フォルダ作成
 os.makedirs(LOCAL_IMG_DIR, exist_ok=True)
+os.makedirs(STATIC_DIR, exist_ok=True)
 # ============================================
 
 def create_client(host, user, password):
@@ -54,15 +61,13 @@ def sync_time():
         if client:
             try:
                 # sudo date -s "..." コマンドを実行
-                # パスワード入力が必要なため、標準入力(stdin)にパスワードを流し込む
                 cmd = f'sudo -S date -s "{now_str}"'
                 stdin, stdout, stderr = client.exec_command(cmd)
                 stdin.write(conf["pass"] + '\n')
                 stdin.flush()
                 
-                # エラーチェック
                 err = stderr.read().decode()
-                if err and "password" not in err: # パスワードプロンプト以外はエラー
+                if err and "password" not in err:
                     print(f"  ❌ [{name}] 同期失敗: {err.strip()}")
                 else:
                     print(f"  ✅ [{name}] 同期完了")
@@ -79,9 +84,8 @@ def download_csv():
         try:
             with SCPClient(client.get_transport()) as scp:
                 scp.get(conf["remote_csv"], LOCAL_CSV)
-            # print(f"📥 Log更新: {LOCAL_CSV}") # うるさいのでコメントアウト
         except Exception as e:
-            pass # ファイルがまだ無い場合などは無視
+            pass 
         finally:
             client.close()
 
@@ -92,19 +96,15 @@ def download_images():
     
     if client:
         try:
-            # 向こうのファイルリストを取得
             stdin, stdout, stderr = client.exec_command(f"ls {conf['remote_img_dir']}")
             files = stdout.read().decode().splitlines()
             
             with SCPClient(client.get_transport()) as scp:
                 for file in files:
-                    # jpg かつ defect_ で始まるファイルのみ
                     if file.endswith(".jpg") and file.startswith("defect_"):
                         local_path = os.path.join(LOCAL_IMG_DIR, file)
-                        
-                        # まだ持っていないファイルならDL
                         if not os.path.exists(local_path):
-                            remote_path = os.path.join(conf["remote_img_dir"], file)
+                            remote_path = os.path.join(conf['remote_img_dir'], file)
                             scp.get(remote_path, local_path)
                             print(f"📸 新着画像GET: {file}")
         except Exception as e:
@@ -112,8 +112,35 @@ def download_images():
         finally:
             client.close()
 
+def download_map():
+    """地図(yaml+pgm)をDLし、PNGに変換して配置する"""
+    conf = ROBOT_CONFIG["xavier"]
+    client = create_client(conf["host"], conf["user"], conf["pass"])
+    
+    if client:
+        try:
+            with SCPClient(client.get_transport()) as scp:
+                # 1. yamlとpgmを一旦手元にDL
+                local_yaml = os.path.join(LOCAL_DIR, "map.yaml")
+                local_pgm = os.path.join(LOCAL_DIR, "map.pgm")
+                
+                scp.get(conf["remote_map_yaml"], local_yaml)
+                scp.get(conf["remote_map_pgm"], local_pgm)
+                
+                # 2. PGM画像をPNGに変換して static/map.png に保存
+                if os.path.exists(local_pgm):
+                    with Image.open(local_pgm) as img:
+                        # Web表示用に static/map.png として保存
+                        img.save(os.path.join(STATIC_DIR, "map.png"))
+                    # print("🗺️ 地図更新完了") # 頻繁に出るとうるさいのでコメントアウト
+
+        except Exception as e:
+            pass # 地図がまだ無い場合などは無視
+        finally:
+            client.close()
+
 def main():
-    print("=== 🤖 ロボットデータ回収システム 🤖 ===")
+    print("=== 🤖 ロボットデータ完全同期システム 🤖 ===")
     print(f"保存先: {LOCAL_DIR}")
     
     # 1. 最初に時刻合わせ
@@ -122,13 +149,11 @@ def main():
     print("\n📡 監視とダウンロードを開始します (Ctrl+Cで停止)")
     try:
         while True:
-            # CSV回収
-            download_csv()
-            # 画像回収
-            download_images()
+            download_csv()    # ログ回収
+            download_images() # 画像回収
+            download_map()    # 地図回収 & 変換
             
-            # 1秒待機
-            time.sleep(1)
+            time.sleep(1)     # 1秒待機
             
     except KeyboardInterrupt:
         print("\n🛑 停止しました")
