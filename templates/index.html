@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>欠品管理システム</title>
+    <style>
+        body { font-family: sans-serif; display: flex; gap: 20px; padding: 20px; background: #f4f4f4;}
+        .panel { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        h2 { margin-top: 0; }
+        canvas { border: 1px solid #ccc; cursor: crosshair; background: #eee; }
+        
+        /* 通知リストのスタイル */
+        #notification-list { list-style: none; padding: 0; max-height: 400px; overflow-y: auto; }
+        .alert-item { 
+            padding: 10px; margin-bottom: 10px; border-left: 5px solid red; 
+            background: #fff0f0; animation: flash 1s; 
+        }
+        @keyframes flash { from { background: yellow; } to { background: #fff0f0; } }
+        .alert-time { font-size: 0.8em; color: #666; }
+        .alert-msg { font-weight: bold; font-size: 1.1em; }
+    </style>
+</head>
+<body>
+
+    <div class="panel">
+        <h2>🛠️ 店舗マップ設定</h2>
+        <p>ドラッグして商品エリアを囲ってください</p>
+        <canvas id="mapCanvas" width="600" height="400"></canvas>
+        <br>
+        <button onclick="saveAreas()">設定を保存する</button>
+        <button onclick="clearAreas()">リセット</button>
+    </div>
+
+    <div class="panel" style="width: 300px;">
+        <h2>🔔 欠品通知ログ</h2>
+        <div id="status">監視中...</div>
+        <ul id="notification-list">
+            </ul>
+    </div>
+
+<script>
+    const canvas = document.getElementById('mapCanvas');
+    const ctx = canvas.getContext('2d');
+    let areas = [];
+    let isDrawing = false, startX, startY;
+
+    // 背景画像（地図）の読み込み
+    // NOTE:
+    // - この画面は `app.py` 経由で開く想定（`/static/map.png` が配信される）
+    // - `templates/index.html` を直接 file:// で開くと `/api/*` や `/static/*` が解決できず地図が見えないことがある
+    const mapImg = new Image();
+    let useFallbackMap = true;
+
+    function mapSrc() {
+        // file:// で直接開かれた場合は相対パスに寄せる（見えるだけでも見えるように）
+        if (location.protocol === 'file:') return '../static/map.png';
+        return '/static/map.png';
+    }
+
+    mapImg.onload = () => { useFallbackMap = false; draw(); };
+    mapImg.onerror = () => { useFallbackMap = true; draw(); };
+    mapImg.src = mapSrc();
+
+    // 初期描画（画像ロード前でも真っ白にならないように）
+    draw();
+
+    // --- キャンバス操作 ---
+    canvas.addEventListener('mousedown', e => {
+        const rect = canvas.getBoundingClientRect();
+        startX = e.clientX - rect.left; startY = e.clientY - rect.top;
+        isDrawing = true;
+    });
+    
+    canvas.addEventListener('mousemove', e => {
+        if(!isDrawing) return;
+        draw();
+        const rect = canvas.getBoundingClientRect();
+        const currX = e.clientX - rect.left; const currY = e.clientY - rect.top;
+        ctx.strokeStyle = 'blue'; ctx.lineWidth = 2;
+        ctx.strokeRect(startX, startY, currX - startX, currY - startY);
+    });
+
+    canvas.addEventListener('mouseup', e => {
+        isDrawing = false;
+        const rect = canvas.getBoundingClientRect();
+        const endX = e.clientX - rect.left; const endY = e.clientY - rect.top;
+        const w = Math.abs(endX - startX); const h = Math.abs(endY - startY);
+        if(w < 10 || h < 10) { draw(); return; } // 小さすぎたらキャンセル
+
+        const name = prompt("エリア名を入力 (例: コーラ)");
+        if(name) {
+            areas.push({ name, x: Math.min(startX, endX), y: Math.min(startY, endY), w, h });
+            saveAreas(); // 即保存
+        }
+        draw();
+    });
+
+    function draw() {
+        ctx.clearRect(0,0, canvas.width, canvas.height);
+        if (!useFallbackMap && mapImg.complete) {
+            try {
+                ctx.drawImage(mapImg, 0, 0, 600, 400);
+            } catch (e) {
+                // 0バイト画像など「壊れた画像」の場合はフォールバックを表示
+                useFallbackMap = true;
+            }
+        }
+
+        if (useFallbackMap) {
+            // 画像が無い/壊れている場合の簡易マップ（デモ用）
+            ctx.fillStyle = '#f0f0f0';
+            ctx.fillRect(0, 0, 600, 400);
+
+            ctx.fillStyle = '#d0d0d0';
+            ctx.fillRect(50, 50, 100, 200);  // 棚A
+            ctx.fillRect(250, 50, 100, 200); // 棚B
+
+            ctx.fillStyle = '#333';
+            ctx.font = 'bold 16px Arial';
+            ctx.fillText('Shelf A', 60, 150);
+            ctx.fillText('Shelf B', 260, 150);
+
+            ctx.fillStyle = '#666';
+            ctx.font = '12px Arial';
+            ctx.fillText('※ map.png が読み込めないため簡易表示中（app.py 経由で開く/ generate_dummy.py で生成）', 10, 390);
+        }
+        
+        areas.forEach(a => {
+            ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
+            ctx.fillRect(a.x, a.y, a.w, a.h);
+            ctx.fillStyle = 'red'; ctx.font = 'bold 14px Arial';
+            ctx.fillText(a.name, a.x, a.y - 5);
+        });
+    }
+
+    // --- API連携 ---
+    function saveAreas() {
+        fetch('/api/save_areas', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(areas)
+        }).then(()=> console.log("保存しました"));
+    }
+
+    function clearAreas() {
+        areas = [];
+        saveAreas();
+        draw();
+    }
+
+    function loadAreas() {
+        fetch('/api/load_areas').then(r => r.json()).then(data => {
+            areas = data; draw();
+        });
+    }
+
+    // --- 定期ポーリング（通知チェック） ---
+    let lastCount = 0;
+    setInterval(() => {
+        fetch('/api/notifications').then(r => r.json()).then(data => {
+            if (data.length > lastCount) {
+                // 新しい通知がある場合だけ更新
+                const list = document.getElementById('notification-list');
+                list.innerHTML = ""; // クリア
+                data.forEach(n => {
+                    const li = document.createElement('li');
+                    li.className = 'alert-item';
+                    li.innerHTML = `<div class="alert-time">${n.time}</div>
+                                    <div class="alert-msg">⚠️ ${n.area}</div>
+                                    <div>座標: ${n.coords}</div>`;
+                    list.appendChild(li);
+                });
+                lastCount = data.length;
+            }
+        });
+    }, 1000); // 1秒ごとに更新
+
+    loadAreas(); // 初期読み込み
+</script>
+</body>
+</html>
