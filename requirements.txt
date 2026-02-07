@@ -3,4 +3,4 @@ gunicorn>=21
 paramiko>=3.0
 scp>=0.15
 Pillow>=10
-
+requests>=2.31

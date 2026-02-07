@@ -58,7 +58,37 @@ GitHubにpush済みなら、多くのPaaS（Render/Railway/Fly.io等）で以下
 - Build: `pip install -r requirements.txt`
 - Start: `gunicorn --workers 1 --bind 0.0.0.0:$PORT app:app`
 
-永続化したい場合は、`store_data/` と `areas.json` が消えないように「永続ディスク/ボリューム」を有効化してください（通知はメモリ保持です）。
+永続化したい場合は、`store_data/` が消えないように「永続ディスク/ボリューム」を有効化してください（通知はメモリ保持です）。
+
+### Renderで「見る側」をクラウドに置く（ビジコン向け）
+
+クラウド(Render)にこのWeb画面を置き、手元PCはコントロールハブWi‑Fiに繋いで `sync_robots.py` が取得したデータをクラウドへアップロードする構成です。
+
+#### 1) Render側（Webアプリ）
+
+- Start Command は `Procfile` の通りでOK: `Procfile:1`
+- 環境変数（必須）
+  - `INGEST_TOKEN`：ランダムな長い文字列（アップロード認証用）
+- あると便利
+  - `MAX_NOTIFICATIONS`：通知保持数（既定200）
+
+Render起動後、ブラウザで `https://<あなたのRenderのURL>/` を開いてエリア設定を保存します（保存先は `store_data/areas.json`）。
+
+#### 2) 手元PC側（ロボット→クラウド送信）
+
+手元PCはコントロールハブWi‑Fiに繋いだまま、以下を設定して実行します。
+
+```bash
+export REMOTE_APP_URL="https://<あなたのRenderのURL>"
+export INGEST_TOKEN="<Render側と同じ値>"
+export REMOTE_RESET_ON_START=1  # 任意: デモ開始前に通知をリセット
+python sync_robots.py
+```
+
+これで `tracking.csv` / `store_data/images/*.jpg` / `store_data/map.yaml` / `static/map.png` をRenderへ送ります。
+
+注意:
+- 会場でRenderにアクセスできない時に備えて、`generate_dummy.py` でローカルデモできる状態も用意しておくと安全です。
 
 ## ロボットからの同期（任意）
 
@@ -71,3 +101,13 @@ GitHubにpush済みなら、多くのPaaS（Render/Railway/Fly.io等）で以下
 - `GET /api/load_areas` エリア取得
 - `GET /api/notifications` 通知取得
 - `GET /healthz` ヘルスチェック
+
+### 取り込みAPI（クラウド連携用）
+
+`INGEST_TOKEN` を設定すると、以下のエンドポイントに `X-Ingest-Token` を付けてアップロードできます。
+
+- `POST /api/ingest/tracking`（multipart file）
+- `POST /api/ingest/image`（multipart file）
+- `POST /api/ingest/map_yaml`（multipart file）
+- `POST /api/ingest/map_png`（multipart file）
+- `POST /api/ingest/reset`（通知/処理済みリセット）

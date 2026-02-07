@@ -4,6 +4,7 @@ import time
 import threading
 import ast
 import csv
+from pathlib import Path
 from typing import Optional, Tuple
 from flask import Flask, render_template, request, jsonify, send_from_directory, abort
 
@@ -17,12 +18,24 @@ MAP_YAML_FILE = os.path.join(DATA_DIR, "map.yaml") # 地図の設定ファイル
 MAP_PNG_FILE = os.environ.get("MAP_PNG_FILE", os.path.join("static", "map.png"))   # Web表示用の地図画像
 AREAS_FILE = os.environ.get("AREAS_FILE", os.path.join(DATA_DIR, "areas.json")) # エリア設定の保存先
 
+# ディレクトリ作成（Render等の初回起動でも落ちないように）
+os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(IMG_DIR, exist_ok=True)
+static_dir = os.path.dirname(MAP_PNG_FILE) or "static"
+os.makedirs(static_dir, exist_ok=True)
+
 # 監視状態
 notifications = [] # 画面に表示する通知リスト
 processed_files = set()
 notifications_lock = threading.Lock()
 processed_files_lock = threading.Lock()
 MAX_NOTIFICATIONS = int(os.environ.get("MAX_NOTIFICATIONS", "200"))
+MAX_PROCESSED_FILES = int(os.environ.get("MAX_PROCESSED_FILES", "5000"))
+
+# Render等で外部から取り込み（ingest）するためのトークン
+INGEST_TOKEN = os.environ.get("INGEST_TOKEN")
+MAX_CONTENT_LENGTH_MB = int(os.environ.get("MAX_CONTENT_LENGTH_MB", "20"))
+app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH_MB * 1024 * 1024
 
 # Flask
 # - デプロイ環境では環境変数PORTが提供されることが多い
@@ -204,6 +217,8 @@ def monitoring_task():
                 
                 with processed_files_lock:
                     processed_files.add(filepath)
+                    if len(processed_files) > MAX_PROCESSED_FILES:
+                        processed_files.clear()
             
             time.sleep(1)
         except Exception as e:
@@ -275,6 +290,7 @@ def save_areas():
     data = request.json
     if not isinstance(data, list):
         return jsonify({"status": "error", "message": "invalid payload"}), 400
+    Path(os.path.dirname(AREAS_FILE) or ".").mkdir(parents=True, exist_ok=True)
     tmp_path = f"{AREAS_FILE}.tmp"
     with open(tmp_path, 'w', encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
@@ -310,6 +326,100 @@ def get_image(filename: str):
 
 @app.route('/healthz')
 def healthz():
+    return jsonify({"status": "ok"})
+
+def _require_ingest_token() -> Optional[tuple]:
+    """ingest API用の簡易認証（未設定なら503）"""
+    if not INGEST_TOKEN:
+        return jsonify({"status": "error", "message": "INGEST_TOKEN not set"}), 503
+
+    json_body = request.get_json(silent=True) if request.is_json else None
+    token = request.headers.get("X-Ingest-Token") or request.form.get("token") or (json_body.get("token") if isinstance(json_body, dict) else None)
+    if token != INGEST_TOKEN:
+        return jsonify({"status": "error", "message": "unauthorized"}), 401
+    return None
+
+def _safe_filename(name: str) -> str:
+    # パス区切りを落として最低限の安全性を確保
+    base = os.path.basename(name)
+    return base.replace("\x00", "")
+
+@app.route('/api/ingest/tracking', methods=['POST'])
+def ingest_tracking():
+    auth = _require_ingest_token()
+    if auth:
+        return auth
+    f = request.files.get("file")
+    if f is None:
+        return jsonify({"status": "error", "message": "file required"}), 400
+
+    tmp_path = f"{LOG_FILE}.tmp"
+    Path(os.path.dirname(LOG_FILE) or ".").mkdir(parents=True, exist_ok=True)
+    f.save(tmp_path)
+    os.replace(tmp_path, LOG_FILE)
+    return jsonify({"status": "ok"})
+
+@app.route('/api/ingest/image', methods=['POST'])
+def ingest_image():
+    auth = _require_ingest_token()
+    if auth:
+        return auth
+    f = request.files.get("file")
+    if f is None:
+        return jsonify({"status": "error", "message": "file required"}), 400
+
+    filename = _safe_filename(f.filename or "")
+    if not filename.lower().endswith(".jpg"):
+        return jsonify({"status": "error", "message": "only .jpg allowed"}), 400
+
+    Path(IMG_DIR).mkdir(parents=True, exist_ok=True)
+    tmp_path = os.path.join(IMG_DIR, f"{filename}.tmp")
+    final_path = os.path.join(IMG_DIR, filename)
+    f.save(tmp_path)
+    os.replace(tmp_path, final_path)
+    return jsonify({"status": "ok", "filename": filename})
+
+@app.route('/api/ingest/map_png', methods=['POST'])
+def ingest_map_png():
+    auth = _require_ingest_token()
+    if auth:
+        return auth
+    f = request.files.get("file")
+    if f is None:
+        return jsonify({"status": "error", "message": "file required"}), 400
+    Path(os.path.dirname(MAP_PNG_FILE) or ".").mkdir(parents=True, exist_ok=True)
+    tmp_path = f"{MAP_PNG_FILE}.tmp"
+    f.save(tmp_path)
+    os.replace(tmp_path, MAP_PNG_FILE)
+    # 次ループでサイズ反映させる
+    converter.reload_if_needed(force=True)
+    return jsonify({"status": "ok"})
+
+@app.route('/api/ingest/map_yaml', methods=['POST'])
+def ingest_map_yaml():
+    auth = _require_ingest_token()
+    if auth:
+        return auth
+    f = request.files.get("file")
+    if f is None:
+        return jsonify({"status": "error", "message": "file required"}), 400
+    Path(os.path.dirname(MAP_YAML_FILE) or ".").mkdir(parents=True, exist_ok=True)
+    tmp_path = f"{MAP_YAML_FILE}.tmp"
+    f.save(tmp_path)
+    os.replace(tmp_path, MAP_YAML_FILE)
+    converter.reload_if_needed(force=True)
+    return jsonify({"status": "ok"})
+
+@app.route('/api/ingest/reset', methods=['POST'])
+def ingest_reset():
+    """デモ用：通知と処理済み状態をリセット"""
+    auth = _require_ingest_token()
+    if auth:
+        return auth
+    with notifications_lock:
+        notifications.clear()
+    with processed_files_lock:
+        processed_files.clear()
     return jsonify({"status": "ok"})
 
 _monitor_thread_started = False

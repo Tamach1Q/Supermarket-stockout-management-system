@@ -5,12 +5,19 @@ import time
 import datetime
 import sys
 from typing import Optional
+from urllib.parse import urljoin
 
 # Pillow はPGM→PNG変換で使用（未インストールでも他の同期は動かす）
 try:
     from PIL import Image  # type: ignore
 except Exception:
     Image = None  # type: ignore
+
+# requests はクラウドへアップロードする場合に使用（未インストールでも同期は動く）
+try:
+    import requests  # type: ignore
+except Exception:
+    requests = None  # type: ignore
 
 # ================= 設定エリア =================
 # ※ここを実際のロボットのIPアドレスに書き換えてください
@@ -54,6 +61,10 @@ MAP_SYNC_INTERVAL_SEC = 15
 os.makedirs(LOCAL_IMG_DIR, exist_ok=True)
 os.makedirs(STATIC_DIR, exist_ok=True)
 # ============================================
+
+REMOTE_APP_URL = os.environ.get("REMOTE_APP_URL")  # 例: https://xxxx.onrender.com
+INGEST_TOKEN = os.environ.get("INGEST_TOKEN")
+REMOTE_RESET_ON_START = os.environ.get("REMOTE_RESET_ON_START", "0") == "1"
 
 def create_client(host, user, password):
     """SSH接続クライアントを作成"""
@@ -228,15 +239,69 @@ def download_map():
         finally:
             client.close()
 
+def _remote_enabled() -> bool:
+    return bool(REMOTE_APP_URL and INGEST_TOKEN)
+
+def _remote_headers() -> dict:
+    return {"X-Ingest-Token": INGEST_TOKEN} if INGEST_TOKEN else {}
+
+def _remote_post_file(endpoint: str, path: str) -> bool:
+    if not _remote_enabled():
+        return False
+    if requests is None:
+        print("⚠️ requests 未導入のため、クラウドへのアップロードはできません（`pip install requests`）")
+        return False
+    if not os.path.exists(path):
+        return False
+
+    base = REMOTE_APP_URL.rstrip("/") + "/"
+    url = urljoin(base, endpoint.lstrip("/"))
+    try:
+        with open(path, "rb") as f:
+            files = {"file": (os.path.basename(path), f)}
+            r = requests.post(url, headers=_remote_headers(), files=files, timeout=10)
+        if r.status_code >= 300:
+            print(f"⚠️ アップロード失敗 {endpoint}: {r.status_code} {r.text[:200]}")
+            return False
+        return True
+    except Exception as e:
+        print(f"⚠️ アップロード例外 {endpoint}: {e}")
+        return False
+
+def _remote_reset() -> None:
+    if not _remote_enabled():
+        return
+    if requests is None:
+        return
+    base = REMOTE_APP_URL.rstrip("/") + "/"
+    url = urljoin(base, "api/ingest/reset")
+    try:
+        r = requests.post(url, headers=_remote_headers(), timeout=10)
+        if r.status_code < 300:
+            print("🧹 リモートをリセットしました")
+    except Exception:
+        pass
+
 def main():
     print("=== 🤖 ロボットデータ完全同期システム 🤖 ===")
     print(f"保存先: {LOCAL_DIR}")
+    if _remote_enabled():
+        print(f"🌐 リモート送信先: {REMOTE_APP_URL}")
+        if requests is None:
+            print("⚠️ リモート送信を使うには requests が必要です（`pip install requests`）")
     
     # 1. 最初に時刻合わせ
     sync_time()
     
     print("\n📡 監視とダウンロードを開始します (Ctrl+Cで停止)")
     last_map_sync = 0.0
+    last_uploaded_csv_mtime: Optional[float] = None
+    last_uploaded_yaml_mtime: Optional[float] = None
+    last_uploaded_map_png_mtime: Optional[float] = None
+    uploaded_images = set()
+
+    if REMOTE_RESET_ON_START:
+        _remote_reset()
     try:
         while True:
             download_csv()    # ログ回収
@@ -246,6 +311,48 @@ def main():
             if now - last_map_sync >= MAP_SYNC_INTERVAL_SEC:
                 download_map()    # 地図回収 & 変換
                 last_map_sync = now
+
+            # ---- リモートへアップロード（任意）----
+            if _remote_enabled():
+                # 1) tracking.csv（更新があれば）
+                try:
+                    m = os.path.getmtime(LOCAL_CSV) if os.path.exists(LOCAL_CSV) else None
+                    if m is not None and m != last_uploaded_csv_mtime:
+                        if _remote_post_file("/api/ingest/tracking", LOCAL_CSV):
+                            last_uploaded_csv_mtime = m
+                except Exception:
+                    pass
+
+                # 2) map.yaml / static/map.png（更新があれば）
+                try:
+                    m = os.path.getmtime(LOCAL_MAP_YAML) if os.path.exists(LOCAL_MAP_YAML) else None
+                    if m is not None and m != last_uploaded_yaml_mtime:
+                        if _remote_post_file("/api/ingest/map_yaml", LOCAL_MAP_YAML):
+                            last_uploaded_yaml_mtime = m
+                except Exception:
+                    pass
+
+                try:
+                    m = os.path.getmtime(STATIC_MAP_PNG) if os.path.exists(STATIC_MAP_PNG) else None
+                    if m is not None and m != last_uploaded_map_png_mtime:
+                        if _remote_post_file("/api/ingest/map_png", STATIC_MAP_PNG):
+                            last_uploaded_map_png_mtime = m
+                except Exception:
+                    pass
+
+                # 3) 新着画像（未送信のみ）
+                try:
+                    if os.path.exists(LOCAL_IMG_DIR):
+                        for name in os.listdir(LOCAL_IMG_DIR):
+                            if not (name.endswith(".jpg") and name.startswith("defect_")):
+                                continue
+                            if name in uploaded_images:
+                                continue
+                            local_path = os.path.join(LOCAL_IMG_DIR, name)
+                            if _remote_post_file("/api/ingest/image", local_path):
+                                uploaded_images.add(name)
+                except Exception:
+                    pass
             
             time.sleep(1)     # 1秒待機
             
