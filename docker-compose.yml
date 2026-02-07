@@ -1,0 +1,17 @@
+services:
+  web:
+    build: .
+    environment:
+      PORT: "5000"
+      HOST: "0.0.0.0"
+      FLASK_DEBUG: "0"
+      DATA_DIR: "./store_data"
+      AREAS_FILE: "./store_data/areas.json"
+      MAX_NOTIFICATIONS: "200"
+    # 非公開（同一マシンからのみアクセス）にするため、localhostにだけ公開
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./store_data:/app/store_data
+      - ./static:/app/static
+    restart: unless-stopped

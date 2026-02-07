@@ -1,19 +1,35 @@
 import os
-import cv2
-import numpy as np
-import pandas as pd
 import time
+import csv
+
+# Pillowで簡易画像生成（未インストールならメッセージを出して終了）
+try:
+    from PIL import Image, ImageDraw, ImageFont  # type: ignore
+except Exception:
+    Image = None  # type: ignore
+    ImageDraw = None  # type: ignore
+    ImageFont = None  # type: ignore
 
 # フォルダ作成
 os.makedirs("store_data/images", exist_ok=True)
 os.makedirs("static", exist_ok=True)
 
+if Image is None:
+    raise SystemExit("Pillow が必要です: `pip install Pillow`")
+
 # 1. ダミーの地図画像を作る (static/map.png)
-map_img = np.ones((400, 600, 3), dtype=np.uint8) * 240 # グレー背景
-cv2.rectangle(map_img, (50, 50), (150, 250), (200, 200, 200), -1) # 棚A
-cv2.rectangle(map_img, (250, 50), (350, 250), (200, 200, 200), -1) # 棚B
-cv2.putText(map_img, "Shelf A", (60, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,0), 2)
-cv2.imwrite("static/map.png", map_img)
+img = Image.new("RGB", (600, 400), (240, 240, 240))  # グレー背景
+draw = ImageDraw.Draw(img)
+draw.rectangle([50, 50, 150, 250], fill=(200, 200, 200))   # 棚A
+draw.rectangle([250, 50, 350, 250], fill=(200, 200, 200))  # 棚B
+font = None
+try:
+    font = ImageFont.load_default()
+except Exception:
+    font = None
+draw.text((60, 150), "Shelf A", fill=(0, 0, 0), font=font)
+draw.text((260, 150), "Shelf B", fill=(0, 0, 0), font=font)
+img.save("static/map.png")
 print("✅ 地図生成: static/map.png")
 
 # 2. ダミーのログと画像を作る
@@ -32,10 +48,11 @@ for t, x, y, img_name in events:
     # ログ追記
     csv_data.append([t, x, y])
     # 画像生成
-    dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)
-    cv2.imwrite(f"store_data/images/defect_{t}.jpg", dummy_img)
+    dummy = Image.new("RGB", (100, 100), (0, 0, 0))
+    dummy.save(f"store_data/images/defect_{t}.jpg")
 
 # CSV保存
-df = pd.DataFrame(csv_data, columns=['time', 'x', 'y'])
-df.to_csv("store_data/tracking.csv", header=False, index=False)
+with open("store_data/tracking.csv", "w", encoding="utf-8", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerows(csv_data)
 print("✅ 完了！ app.py を実行してください。")

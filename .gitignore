@@ -1,0 +1,11 @@
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+env/
+.env
+
+# local runtime data
+store_data/images/
+store_data/tracking.csv
+store_data/areas.json

@@ -1,0 +1,9 @@
+.git
+.venv
+__pycache__
+*.pyc
+.DS_Store
+store_data/images
+store_data/tracking.csv
+areas.json
+

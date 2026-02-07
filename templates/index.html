@@ -179,7 +179,8 @@
                     li.className = 'alert-item';
                     li.innerHTML = `<div class="alert-time">${n.time}</div>
                                     <div class="alert-msg">⚠️ ${n.area}</div>
-                                    <div>座標: ${n.coords}</div>`;
+                                    <div>座標: ${n.coords}</div>
+                                    ${n.img ? `<div style="margin-top:6px;"><img src="/images/${encodeURIComponent(n.img)}" style="max-width:100%; border-radius:6px;" loading="lazy" onerror="this.style.display='none'"></div>` : ''}`;
                     list.appendChild(li);
                 });
                 lastCount = data.length;

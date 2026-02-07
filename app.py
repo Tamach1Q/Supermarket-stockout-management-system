@@ -1,25 +1,35 @@
 import os
 import json
 import time
-import pandas as pd
 import threading
 import ast
+import csv
 from typing import Optional, Tuple
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, send_from_directory, abort
 
 app = Flask(__name__)
 
 # --- 設定 ---
-DATA_DIR = "./store_data"
+DATA_DIR = os.environ.get("DATA_DIR", "./store_data")
 IMG_DIR = os.path.join(DATA_DIR, "images")
 LOG_FILE = os.path.join(DATA_DIR, "tracking.csv")
 MAP_YAML_FILE = os.path.join(DATA_DIR, "map.yaml") # 地図の設定ファイル
-MAP_PNG_FILE = os.path.join("static", "map.png")   # Web表示用の地図画像
-AREAS_FILE = "areas.json" # エリア設定の保存先
+MAP_PNG_FILE = os.environ.get("MAP_PNG_FILE", os.path.join("static", "map.png"))   # Web表示用の地図画像
+AREAS_FILE = os.environ.get("AREAS_FILE", os.path.join(DATA_DIR, "areas.json")) # エリア設定の保存先
 
 # 監視状態
 notifications = [] # 画面に表示する通知リスト
 processed_files = set()
+notifications_lock = threading.Lock()
+processed_files_lock = threading.Lock()
+MAX_NOTIFICATIONS = int(os.environ.get("MAX_NOTIFICATIONS", "200"))
+
+# Flask
+# - デプロイ環境では環境変数PORTが提供されることが多い
+# - `app.run()` は開発用途。Gunicorn等では `app:app` を参照して起動する
+HOST = os.environ.get("HOST", "0.0.0.0")
+PORT = int(os.environ.get("PORT", "5000"))
+DEBUG = os.environ.get("FLASK_DEBUG", "0") == "1"
 
 # --- ユーティリティ ---
 def _parse_map_yaml_simple(path: str) -> Tuple[Optional[float], Optional[list]]:
@@ -142,7 +152,7 @@ converter = MapConverter()
 def monitoring_task():
     """1秒ごとに新しい画像がないかチェックする"""
     global notifications
-    print("👀 監視システム起動中...")
+    print("👀 監視システム起動中...", flush=True)
     
     while True:
         # 地図設定を再読み込み（SLAMで地図が更新される可能性があるため）
@@ -158,7 +168,9 @@ def monitoring_task():
             
             for filename in jpg_files:
                 filepath = os.path.join(IMG_DIR, filename)
-                if filepath in processed_files: continue
+                with processed_files_lock:
+                    if filepath in processed_files:
+                        continue
 
                 # 2. ファイル名から時刻取得 (defect_1707...jpg)
                 try:
@@ -176,7 +188,7 @@ def monitoring_task():
 
                     # 5. エリア判定 (ピクセル座標で判定)
                     area_name = check_area(pixel_x, pixel_y)
-                    
+
                     # 6. 通知作成
                     msg = {
                         "time": time.strftime('%H:%M:%S', time.localtime(photo_time)),
@@ -184,40 +196,71 @@ def monitoring_task():
                         "coords": f"({world_x:.2f}m, {world_y:.2f}m)", # 表示はメートルで
                         "img": filename
                     }
-                    notifications.insert(0, msg) # 最新を上に
-                    print(f"🔔 通知: {area_name} で欠品！ (px: {int(pixel_x)}, {int(pixel_y)})")
+                    with notifications_lock:
+                        notifications.insert(0, msg) # 最新を上に
+                        if len(notifications) > MAX_NOTIFICATIONS:
+                            del notifications[MAX_NOTIFICATIONS:]
+                    print(f"🔔 通知: {area_name} で欠品！ (px: {int(pixel_x)}, {int(pixel_y)})", flush=True)
                 
-                processed_files.add(filepath)
+                with processed_files_lock:
+                    processed_files.add(filepath)
             
             time.sleep(1)
         except Exception as e:
-            print(f"エラー: {e}")
+            print(f"エラー: {e}", flush=True)
             time.sleep(1)
 
 def get_location_from_log(target_time):
     """ログファイルから時刻に近い座標を返す"""
     if not os.path.exists(LOG_FILE): return None, None
     try:
-        df = pd.read_csv(LOG_FILE, names=['time', 'x', 'y'])
-        idx = (df['time'] - target_time).abs().idxmin()
-        row = df.loc[idx]
-        if abs(row['time'] - target_time) > 5.0: return None, None # 5秒以上ズレたら無視
-        return row['x'], row['y']
+        best_diff = None
+        best_x = None
+        best_y = None
+
+        with open(LOG_FILE, "r", encoding="utf-8", newline="") as f:
+            reader = csv.reader(f)
+            for row in reader:
+                if len(row) < 3:
+                    continue
+                try:
+                    t = float(row[0])
+                    x = float(row[1])
+                    y = float(row[2])
+                except Exception:
+                    continue
+
+                diff = abs(t - target_time)
+                if best_diff is None or diff < best_diff:
+                    best_diff = diff
+                    best_x = x
+                    best_y = y
+
+        if best_diff is None or best_diff > 5.0:
+            return None, None  # 5秒以上ズレたら無視
+        return best_x, best_y
     except:
         return None, None
 
 def check_area(x, y):
     """座標(ピクセル)がどのエリアに入っているか"""
     if not os.path.exists(AREAS_FILE): return "未設定エリア"
-    
-    with open(AREAS_FILE, 'r') as f:
-        areas = json.load(f)
+    try:
+        with open(AREAS_FILE, 'r', encoding="utf-8") as f:
+            areas = json.load(f)
+        if not isinstance(areas, list):
+            return "未設定エリア"
+    except Exception:
+        return "未設定エリア"
     
     for area in areas:
         # エリア定義(JSON)もピクセル座標なので、そのまま比較
-        if (area['x'] <= x <= area['x'] + area['w'] and 
-            area['y'] <= y <= area['y'] + area['h']):
-            return area['name']
+        try:
+            if (area['x'] <= x <= area['x'] + area['w'] and 
+                area['y'] <= y <= area['y'] + area['h']):
+                return area.get('name', "未設定エリア")
+        except Exception:
+            continue
     
     return "通路・不明"
 
@@ -230,27 +273,69 @@ def index():
 def save_areas():
     """地図で描いたエリアを保存"""
     data = request.json
-    with open(AREAS_FILE, 'w') as f:
-        json.dump(data, f, indent=2)
+    if not isinstance(data, list):
+        return jsonify({"status": "error", "message": "invalid payload"}), 400
+    tmp_path = f"{AREAS_FILE}.tmp"
+    with open(tmp_path, 'w', encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    os.replace(tmp_path, AREAS_FILE)
     return jsonify({"status": "ok"})
 
 @app.route('/api/load_areas')
 def load_areas():
     """保存されたエリアを読み込み"""
     if os.path.exists(AREAS_FILE):
-        with open(AREAS_FILE, 'r') as f:
-            return jsonify(json.load(f))
+        try:
+            with open(AREAS_FILE, 'r', encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return jsonify(data)
+        except Exception:
+            pass
     return jsonify([])
 
 @app.route('/api/notifications')
 def get_notifications():
     """フロントエンドに通知を送る"""
-    return jsonify(notifications)
+    with notifications_lock:
+        snapshot = list(notifications)
+    return jsonify(snapshot)
+
+@app.route('/images/<path:filename>')
+def get_image(filename: str):
+    """欠品画像を配信（store_data/images 配下）"""
+    if not filename.lower().endswith(".jpg"):
+        return abort(404)
+    return send_from_directory(IMG_DIR, filename)
+
+@app.route('/healthz')
+def healthz():
+    return jsonify({"status": "ok"})
+
+_monitor_thread_started = False
+_monitor_thread_lock = threading.Lock()
+
+def start_monitoring_once() -> None:
+    """WSGI(Gunicorn等)でも確実に監視スレッドを起動する"""
+    global _monitor_thread_started
+    with _monitor_thread_lock:
+        if _monitor_thread_started:
+            return
+        if os.environ.get("DISABLE_MONITORING", "0") == "1":
+            _monitor_thread_started = True
+            return
+        # Flaskのデバッグリローダは親/子の2プロセスを起動する。
+        # 親プロセス側ではスレッドを起動しない（重複監視防止）。
+        if DEBUG and os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+            return
+        t = threading.Thread(target=monitoring_task, daemon=True)
+        t.start()
+        _monitor_thread_started = True
+
+# 起動時に監視スレッドを開始（誰も見ていない間の通知も溜める）
+start_monitoring_once()
 
 if __name__ == '__main__':
-    # 監視スレッドを開始
-    t = threading.Thread(target=monitoring_task, daemon=True)
-    t.start()
-    
-    # Webサーバー起動
-    app.run(debug=True, port=5000)
+    # Webサーバー起動（開発用途）
+    # 監視は起動済み。リローダは二重起動の原因になるため無効化しておく
+    app.run(debug=DEBUG, host=HOST, port=PORT, use_reloader=False)
