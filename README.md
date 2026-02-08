@@ -1,6 +1,6 @@
 # My_shop_app（欠品管理システム）
 
-Flaskで動く簡易Webアプリです。`/` で地図上に商品エリアを設定し、`store_data/images` に増える欠品画像と `store_data/tracking.csv` の時刻・座標を突き合わせて通知します。
+Flaskで動く簡易Webアプリです。`/` で地図上に商品エリアを設定し、`store_data/images` に増える欠品画像と `store_data/tracking.csv` の時刻・座標を突き合わせて通知します（通知一覧は `/monitor`）。
 
 ## ローカル起動（開発）
 
@@ -97,6 +97,7 @@ python sync_robots.py
 ## エンドポイント
 
 - `GET /` 画面
+- `GET /monitor` 通知一覧（従来UI）
 - `POST /api/save_areas` エリア保存
 - `GET /api/load_areas` エリア取得
 - `GET /api/notifications` 通知取得

@@ -284,6 +284,10 @@ def check_area(x, y):
 def index():
     return render_template('index.html')
 
+@app.route('/monitor')
+def monitor():
+    return render_template('monitor.html')
+
 @app.route('/api/save_areas', methods=['POST'])
 def save_areas():
     """地図で描いたエリアを保存"""
