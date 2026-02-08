@@ -2,60 +2,278 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>欠品管理システム</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stockout Monitor - 欠品管理システム</title>
     <style>
-        body { font-family: sans-serif; display: flex; gap: 20px; padding: 20px; background: #f4f4f4;}
-        .panel { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-        h2 { margin-top: 0; }
-        canvas { border: 1px solid #ccc; cursor: crosshair; background: #eee; }
-        
-        /* 通知リストのスタイル */
-        #notification-list { list-style: none; padding: 0; max-height: 400px; overflow-y: auto; }
-        .alert-item { 
-            padding: 10px; margin-bottom: 10px; border-left: 5px solid red; 
-            background: #fff0f0; animation: flash 1s; 
+        :root {
+            --primary-color: #0066cc;
+            --primary-hover: #0052a3;
+            --danger-color: #e63946;
+            --bg-color: #f3f4f6;
+            --panel-bg: #ffffff;
+            --text-color: #333;
+            --border-color: #ddd;
+            --shadow: 0 4px 6px rgba(0,0,0,0.1);
         }
-        @keyframes flash { from { background: yellow; } to { background: #fff0f0; } }
-        .alert-time { font-size: 0.8em; color: #666; }
-        .alert-msg { font-weight: bold; font-size: 1.1em; }
+
+        body {
+            font-family: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* ヘッダー */
+        header {
+            background-color: var(--primary-color);
+            color: white;
+            padding: 0 20px;
+            height: 60px;
+            display: flex;
+            align-items: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            flex-shrink: 0;
+        }
+        header h1 { margin: 0; font-size: 1.2rem; display: flex; align-items: center; gap: 10px; }
+
+        /* メインレイアウト */
+        .container {
+            display: flex;
+            flex: 1;
+            padding: 20px;
+            gap: 20px;
+            overflow: hidden;
+        }
+
+        /* 左パネル：マップ */
+        .map-panel {
+            flex: 2;
+            background: var(--panel-bg);
+            border-radius: 12px;
+            box-shadow: var(--shadow);
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            min-width: 640px; /* Canvasサイズ確保 */
+        }
+        
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .panel-title { margin: 0; font-size: 1.1rem; font-weight: bold; color: #444; }
+        
+        .toolbar { display: flex; gap: 10px; }
+        
+        button {
+            border: none;
+            border-radius: 6px;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 0.9rem;
+            transition: opacity 0.2s;
+        }
+        button:hover { opacity: 0.9; }
+        .btn-primary { background-color: var(--primary-color); color: white; }
+        .btn-danger { background-color: #fff; border: 1px solid var(--danger-color); color: var(--danger-color); }
+        .btn-danger:hover { background-color: #fff0f0; }
+
+        .canvas-container {
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #eee;
+            border-radius: 8px;
+            border: 2px dashed #ccc;
+            overflow: auto;
+            position: relative;
+        }
+        canvas { 
+            background: white; 
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05); 
+            touch-action: none; /* スマホでのスクロール防止 */
+        }
+
+        /* 右パネル：通知 */
+        .notification-panel {
+            flex: 1;
+            background: var(--panel-bg);
+            border-radius: 12px;
+            box-shadow: var(--shadow);
+            display: flex;
+            flex-direction: column;
+            min-width: 300px;
+            max-width: 400px;
+        }
+        
+        .notification-header {
+            padding: 15px 20px;
+            border-bottom: 1px solid var(--border-color);
+            background: #fafafa;
+            border-radius: 12px 12px 0 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        #status-badge {
+            font-size: 0.8rem;
+            padding: 4px 8px;
+            border-radius: 12px;
+            background: #e0e0e0;
+            color: #555;
+        }
+        #status-badge.active { background: #d1fae5; color: #065f46; }
+
+        #notification-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            flex: 1;
+            overflow-y: auto;
+            background: #f9f9f9;
+        }
+
+        /* 通知カード */
+        .alert-card {
+            background: white;
+            margin: 10px 15px;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 5px solid var(--danger-color);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            animation: slideIn 0.3s ease-out;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(20px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+        .alert-header { display: flex; justify-content: space-between; align-items: baseline; }
+        .alert-area { font-size: 1.1rem; font-weight: bold; color: var(--danger-color); }
+        .alert-time { font-size: 0.85rem; color: #888; }
+        .alert-coords { font-size: 0.85rem; color: #666; background: #eee; padding: 2px 6px; border-radius: 4px; align-self: flex-start; }
+        .alert-img {
+            width: 100%;
+            height: 150px;
+            object-fit: cover;
+            border-radius: 6px;
+            background-color: #000;
+            cursor: pointer;
+        }
+
+        /* モーダル */
+        .modal-overlay {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: flex; justify-content: center; align-items: center;
+            z-index: 1000;
+            opacity: 0; pointer-events: none;
+            transition: opacity 0.2s;
+        }
+        .modal-overlay.open { opacity: 1; pointer-events: auto; }
+        .modal {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            width: 90%;
+            max-width: 400px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+            text-align: center;
+        }
+        .modal h3 { margin-top: 0; color: var(--primary-color); }
+        .modal input {
+            width: 100%; padding: 10px; margin: 15px 0;
+            border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; font-size: 1rem;
+        }
+        .modal-buttons { display: flex; gap: 10px; justify-content: flex-end; }
+
+        /* レスポンシブ */
+        @media (max-width: 900px) {
+            .container { flex-direction: column; overflow-y: auto; }
+            .map-panel { min-width: auto; height: 500px; flex: none; }
+            .notification-panel { max-width: none; height: 400px; flex: none; }
+        }
     </style>
 </head>
 <body>
 
-    <div class="panel">
-        <h2>🛠️ 店舗マップ設定</h2>
-        <p>ドラッグして商品エリアを囲ってください</p>
-        <canvas id="mapCanvas" width="600" height="400"></canvas>
-        <br>
-        <button onclick="saveAreas()">設定を保存する</button>
-        <button onclick="clearAreas()">リセット</button>
+<header>
+    <h1>📦 Stockout Monitor <span style="font-size: 0.8em; opacity: 0.8; font-weight: normal;">| 店内欠品管理</span></h1>
+</header>
+
+<div class="container">
+    <div class="map-panel">
+        <div class="panel-header">
+            <div>
+                <p class="panel-title">店舗マップ設定</p>
+                <small style="color: #666;">エリアをドラッグして囲んでください（タッチ操作対応）</small>
+            </div>
+            <div class="toolbar">
+                <button class="btn-primary" onclick="triggerSave()">💾 保存する</button>
+                <button class="btn-danger" onclick="clearAreas()">🗑️ リセット</button>
+            </div>
+        </div>
+        <div class="canvas-container">
+            <canvas id="mapCanvas" width="600" height="400"></canvas>
+        </div>
     </div>
 
-    <div class="panel" style="width: 300px;">
-        <h2>🔔 欠品通知ログ</h2>
-        <div id="status">監視中...</div>
+    <div class="notification-panel">
+        <div class="notification-header">
+            <span class="panel-title">🔔 欠品アラート</span>
+            <span id="status-badge">接続中...</span>
+        </div>
         <ul id="notification-list">
             </ul>
     </div>
+</div>
+
+<div class="modal-overlay" id="areaModal">
+    <div class="modal">
+        <h3>エリア設定</h3>
+        <p>選択した範囲のエリア名を入力してください</p>
+        <input type="text" id="areaNameInput" placeholder="例: カップ麺コーナー" autocomplete="off">
+        <div class="modal-buttons">
+            <button onclick="closeModal()" style="background:#ccc; color:#333;">キャンセル</button>
+            <button class="btn-primary" onclick="confirmArea()">決定</button>
+        </div>
+    </div>
+</div>
 
 <script>
+    // === 設定・変数定義 ===
     const canvas = document.getElementById('mapCanvas');
     const ctx = canvas.getContext('2d');
-    const statusEl = document.getElementById('status');
-    let areas = [];
-    let isDrawing = false, startX, startY;
+    const statusBadge = document.getElementById('status-badge');
+    const notificationList = document.getElementById('notification-list');
+    
+    // モーダル関連
+    const modal = document.getElementById('areaModal');
+    const nameInput = document.getElementById('areaNameInput');
+    let tempRect = null; // エリア確定前の矩形情報
 
-    // 背景画像（地図）の読み込み
-    // NOTE:
-    // - この画面は `app.py` 経由で開く想定（`/static/map.png` が配信される）
-    // - `templates/index.html` を直接 file:// で開くと `/api/*` や `/static/*` が解決できず地図が見えないことがある
+    let areas = [];
+    let isDrawing = false;
+    let startX, startY, currentX, currentY;
+
+    // === 地図画像の読み込み ===
     const mapImg = new Image();
     let useFallbackMap = true;
 
     function mapSrc() {
-        // file:// で直接開かれた場合は相対パスに寄せる（見えるだけでも見えるように）
         if (location.protocol === 'file:') return '../static/map.png';
-        // ブラウザキャッシュ回避のため、クエリを付けて毎回新しいURLにする
         return '/static/map.png?t=' + Date.now();
     }
 
@@ -63,132 +281,255 @@
     mapImg.onerror = () => { useFallbackMap = true; draw(); };
     mapImg.src = mapSrc();
 
-    // 初期描画（画像ロード前でも真っ白にならないように）
-    draw();
-
-    // 地図はサーバ側で更新される可能性があるため定期リロード
-    // TODO(後で修正): 更新頻度は運用に合わせて調整してください
+    // 定期リロード (地図更新対応)
     setInterval(() => {
-        // file:// の場合はAPIも使えないので、ここでは更新しない
         if (location.protocol === 'file:') return;
-        mapImg.src = mapSrc();
-    }, 10000);
+        // 画像を再読み込みしても画面がチラつかないように裏で読み込む
+        const hiddenImg = new Image();
+        hiddenImg.onload = () => { mapImg.src = hiddenImg.src; };
+        hiddenImg.src = mapSrc();
+    }, 15000);
 
-    // --- キャンバス操作 ---
-    canvas.addEventListener('mousedown', e => {
+    // === 描画ロジック ===
+    function getPos(e) {
         const rect = canvas.getBoundingClientRect();
-        startX = e.clientX - rect.left; startY = e.clientY - rect.top;
+        // タッチイベント対応
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        return {
+            x: clientX - rect.left,
+            y: clientY - rect.top
+        };
+    }
+
+    // マウス & タッチイベント共通化
+    function startDraw(e) {
+        e.preventDefault(); // スクロール防止
+        const pos = getPos(e);
+        startX = pos.x; startY = pos.y;
+        currentX = pos.x; currentY = pos.y;
         isDrawing = true;
-    });
-    
-    canvas.addEventListener('mousemove', e => {
-        if(!isDrawing) return;
+    }
+
+    function moveDraw(e) {
+        if (!isDrawing) return;
+        e.preventDefault();
+        const pos = getPos(e);
+        currentX = pos.x; currentY = pos.y;
         draw();
-        const rect = canvas.getBoundingClientRect();
-        const currX = e.clientX - rect.left; const currY = e.clientY - rect.top;
-        ctx.strokeStyle = 'blue'; ctx.lineWidth = 2;
-        ctx.strokeRect(startX, startY, currX - startX, currY - startY);
-    });
-
-    canvas.addEventListener('mouseup', e => {
-        isDrawing = false;
-        const rect = canvas.getBoundingClientRect();
-        const endX = e.clientX - rect.left; const endY = e.clientY - rect.top;
-        const w = Math.abs(endX - startX); const h = Math.abs(endY - startY);
-        if(w < 10 || h < 10) { draw(); return; } // 小さすぎたらキャンセル
-
-        const name = prompt("エリア名を入力 (例: コーラ)");
-        if(name) {
-            areas.push({ name, x: Math.min(startX, endX), y: Math.min(startY, endY), w, h });
-            saveAreas(); // 即保存
-        }
-        draw();
-    });
-
-    function draw() {
-        ctx.clearRect(0,0, canvas.width, canvas.height);
-        if (!useFallbackMap && mapImg.complete) {
-            try {
-                ctx.drawImage(mapImg, 0, 0, 600, 400);
-            } catch (e) {
-                // 0バイト画像など「壊れた画像」の場合はフォールバックを表示
-                useFallbackMap = true;
-            }
-        }
-
-        if (useFallbackMap) {
-            if (statusEl) statusEl.textContent = '地図未取得（簡易マップ表示中）';
-            // 画像が無い/壊れている場合の簡易マップ（デモ用）
-            ctx.fillStyle = '#f0f0f0';
-            ctx.fillRect(0, 0, 600, 400);
-
-            ctx.fillStyle = '#d0d0d0';
-            ctx.fillRect(50, 50, 100, 200);  // 棚A
-            ctx.fillRect(250, 50, 100, 200); // 棚B
-
-            ctx.fillStyle = '#333';
-            ctx.font = 'bold 16px Arial';
-            ctx.fillText('Shelf A', 60, 150);
-            ctx.fillText('Shelf B', 260, 150);
-
-            ctx.fillStyle = '#666';
-            ctx.font = '12px Arial';
-            ctx.fillText('※ map.png が読み込めないため簡易表示中（app.py 経由で開く/ generate_dummy.py で生成）', 10, 390);
-        } else {
-            if (statusEl) statusEl.textContent = '監視中...';
-        }
         
+        // ドラッグ中の矩形表示
+        ctx.strokeStyle = '#0066cc';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 3]);
+        ctx.strokeRect(startX, startY, currentX - startX, currentY - startY);
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(0, 102, 204, 0.1)';
+        ctx.fillRect(startX, startY, currentX - startX, currentY - startY);
+    }
+
+    function endDraw(e) {
+        if (!isDrawing) return;
+        isDrawing = false;
+        
+        // 矩形の正規化 (マイナス方向へのドラッグ対応)
+        const w = Math.abs(currentX - startX);
+        const h = Math.abs(currentY - startY);
+        const x = Math.min(startX, currentX);
+        const y = Math.min(startY, currentY);
+
+        if (w < 10 || h < 10) { draw(); return; } // 小さすぎる場合は無視
+
+        // モーダルを開いて名前を入力させる
+        tempRect = { x, y, w, h };
+        openModal();
+    }
+
+    // イベントリスナー登録
+    canvas.addEventListener('mousedown', startDraw);
+    canvas.addEventListener('mousemove', moveDraw);
+    canvas.addEventListener('mouseup', endDraw);
+    // タッチ対応
+    canvas.addEventListener('touchstart', startDraw, {passive: false});
+    canvas.addEventListener('touchmove', moveDraw, {passive: false});
+    canvas.addEventListener('touchend', endDraw);
+
+    // === 描画レンダリング ===
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // 1. 地図描画
+        if (!useFallbackMap && mapImg.complete && mapImg.naturalWidth > 0) {
+            ctx.drawImage(mapImg, 0, 0, canvas.width, canvas.height);
+        } else {
+            drawFallbackMap();
+        }
+
+        // 2. 保存済みエリア描画
         areas.forEach(a => {
-            ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
+            ctx.fillStyle = 'rgba(230, 57, 70, 0.2)'; // 薄い赤
+            ctx.strokeStyle = '#e63946';
+            ctx.lineWidth = 2;
             ctx.fillRect(a.x, a.y, a.w, a.h);
-            ctx.fillStyle = 'red'; ctx.font = 'bold 14px Arial';
-            ctx.fillText(a.name, a.x, a.y - 5);
+            ctx.strokeRect(a.x, a.y, a.w, a.h);
+            
+            // エリア名ラベル
+            ctx.fillStyle = '#e63946';
+            ctx.font = 'bold 14px sans-serif';
+            ctx.textBaseline = 'bottom';
+            ctx.fillText(a.name, a.x, a.y - 4);
         });
     }
 
-    // --- API連携 ---
+    function drawFallbackMap() {
+        ctx.fillStyle = '#f0f0f0';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        // 棚のダミー
+        ctx.fillStyle = '#dcdcdc';
+        ctx.fillRect(50, 50, 100, 200);
+        ctx.fillRect(250, 50, 100, 200);
+        ctx.fillStyle = '#888';
+        ctx.font = 'bold 20px sans-serif';
+        ctx.fillText('Shelf A', 60, 150);
+        ctx.fillText('Shelf B', 260, 150);
+        ctx.font = '12px sans-serif';
+        ctx.fillStyle = '#aaa';
+        ctx.fillText('No Map Image', 10, 390);
+    }
+
+    // === モーダル操作 ===
+    function openModal() {
+        nameInput.value = '';
+        modal.classList.add('open');
+        setTimeout(() => nameInput.focus(), 100); // フォーカス設定
+    }
+
+    function closeModal() {
+        modal.classList.remove('open');
+        tempRect = null;
+        draw(); // キャンセル時は線を消す
+    }
+
+    function confirmArea() {
+        const name = nameInput.value.trim();
+        if (name && tempRect) {
+            areas.push({ ...tempRect, name });
+            saveAreas(); // 追加後即保存
+        }
+        closeModal();
+        draw();
+    }
+    
+    // Enterキー対応
+    nameInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') confirmArea();
+    });
+
+    // === API通信 ===
     function saveAreas() {
+        // ボタンフィードバック
+        const btn = document.querySelector('.btn-primary');
+        const originalText = btn.innerText;
+        btn.innerText = '保存中...';
+        
         fetch('/api/save_areas', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
+            method: 'POST', 
+            headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(areas)
-        }).then(()=> console.log("保存しました"));
+        })
+        .then(res => res.json())
+        .then(data => {
+            console.log("Saved:", data);
+            setTimeout(() => btn.innerText = '✅ 保存完了', 500);
+            setTimeout(() => btn.innerText = originalText, 2000);
+        })
+        .catch(err => {
+            console.error(err);
+            btn.innerText = '❌ エラー';
+        });
+    }
+
+    // 手動保存ボタン用（中身は同じだが明示的に呼ぶ用）
+    function triggerSave() {
+        saveAreas();
     }
 
     function clearAreas() {
+        if(!confirm('本当にすべてのエリア設定を削除しますか？')) return;
         areas = [];
         saveAreas();
         draw();
     }
 
     function loadAreas() {
-        fetch('/api/load_areas').then(r => r.json()).then(data => {
-            areas = data; draw();
+        fetch('/api/load_areas')
+            .then(r => r.json())
+            .then(data => {
+                if (Array.isArray(data)) {
+                    areas = data;
+                    draw();
+                }
+            })
+            .catch(() => {});
+    }
+
+    // === 通知ポーリング ===
+    let lastNotifications = [];
+
+    function updateNotifications() {
+        fetch('/api/notifications')
+            .then(r => r.json())
+            .then(data => {
+                statusBadge.textContent = '● 監視中';
+                statusBadge.className = 'active';
+
+                // 配列の中身を比較して変更があれば再描画（簡易的な比較）
+                if (JSON.stringify(data) !== JSON.stringify(lastNotifications)) {
+                    renderList(data);
+                    lastNotifications = data;
+                }
+            })
+            .catch(() => {
+                statusBadge.textContent = '× 切断';
+                statusBadge.className = '';
+            });
+    }
+
+    function renderList(data) {
+        notificationList.innerHTML = "";
+        if (data.length === 0) {
+            notificationList.innerHTML = '<li style="padding:20px; text-align:center; color:#aaa;">通知はありません</li>';
+            return;
+        }
+
+        data.forEach(n => {
+            const li = document.createElement('li');
+            li.className = 'alert-card';
+            
+            // 画像がある場合のHTML
+            const imgHtml = n.img 
+                ? `<img src="/images/${encodeURIComponent(n.img)}" class="alert-img" onclick="window.open(this.src, '_blank')">` 
+                : '';
+
+            li.innerHTML = `
+                <div class="alert-header">
+                    <span class="alert-area">${n.area}</span>
+                    <span class="alert-time">${n.time}</span>
+                </div>
+                <div class="alert-coords">📍 ${n.coords}</div>
+                ${imgHtml}
+            `;
+            notificationList.appendChild(li);
         });
     }
 
-    // --- 定期ポーリング（通知チェック） ---
-    let lastCount = 0;
-    setInterval(() => {
-        fetch('/api/notifications').then(r => r.json()).then(data => {
-            if (data.length > lastCount) {
-                // 新しい通知がある場合だけ更新
-                const list = document.getElementById('notification-list');
-                list.innerHTML = ""; // クリア
-                data.forEach(n => {
-                    const li = document.createElement('li');
-                    li.className = 'alert-item';
-                    li.innerHTML = `<div class="alert-time">${n.time}</div>
-                                    <div class="alert-msg">⚠️ ${n.area}</div>
-                                    <div>座標: ${n.coords}</div>
-                                    ${n.img ? `<div style="margin-top:6px;"><img src="/images/${encodeURIComponent(n.img)}" style="max-width:100%; border-radius:6px;" loading="lazy" onerror="this.style.display='none'"></div>` : ''}`;
-                    list.appendChild(li);
-                });
-                lastCount = data.length;
-            }
-        });
-    }, 1000); // 1秒ごとに更新
+    // 1秒ごとに更新
+    setInterval(updateNotifications, 1000);
 
-    loadAreas(); // 初期読み込み
+    // 初期化
+    loadAreas();
+    updateNotifications();
+
 </script>
 </body>
 </html>
