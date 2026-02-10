@@ -5,8 +5,15 @@ import time
 import datetime
 import sys
 from typing import Optional, Set
+from urllib.parse import urljoin
 
-# Pillow はPGM→PNG変換で使用（未インストールでも他の同期は動かす）
+# クラウド送信用のライブラリ
+try:
+    import requests  # type: ignore
+except Exception:
+    requests = None  # type: ignore
+
+# Pillow はPGM→PNG変換で使用
 try:
     from PIL import Image  # type: ignore
 except Exception:
@@ -21,11 +28,6 @@ ROBOT_CONFIG = {
         "user": "jetson",         # ユーザー名
         "pass": "jetson",         # パスワード
         "remote_csv": "/home/jetson/logs/tracking.csv", # ログファイルの場所
-        
-        # ★追加: SLAMが出力した地図ファイルの場所
-        # TODO(後で修正): チームメイト実装が確定したら、実際の出力先に合わせて修正してください
-        # - 基本は map.yaml をDLし、yaml内の image: で指定された画像（pgm/png）もDLします
-        # - yamlのパースに失敗した場合のみ remote_map_image_fallback を使います
         "remote_map_yaml": "/home/jetson/maps/map.yaml",
         "remote_map_image_fallback": "/home/jetson/maps/map.pgm",
     },
@@ -38,17 +40,21 @@ ROBOT_CONFIG = {
     }
 }
 
-# 保存先
+# 保存先設定
 LOCAL_DIR = "./store_data"
-LOCAL_RAW_IMG_DIR = os.path.join(LOCAL_DIR, "raw_images")
+LOCAL_RAW_IMG_DIR = os.path.join(LOCAL_DIR, "raw_images") # 推論前の画像置き場
 LOCAL_CSV = os.path.join(LOCAL_DIR, "tracking.csv")
-STATIC_DIR = "./static"  # Web表示用画像の保存先
+STATIC_DIR = "./static"
 LOCAL_MAP_YAML = os.path.join(LOCAL_DIR, "map.yaml")
-LOCAL_MAP_IMAGE = os.path.join(LOCAL_DIR, "map_image")  # 拡張子はDL時に付ける
+LOCAL_MAP_IMAGE = os.path.join(LOCAL_DIR, "map_image")
 STATIC_MAP_PNG = os.path.join(STATIC_DIR, "map.png")
 
-# 地図は頻繁に更新されない想定なので低頻度でOK（負荷軽減）
+# 更新間隔
 MAP_SYNC_INTERVAL_SEC = 15
+
+# クラウド設定（環境変数から読み込み）
+REMOTE_APP_URL = os.environ.get("REMOTE_APP_URL")  # 例: https://xxxx.onrender.com
+INGEST_TOKEN = os.environ.get("INGEST_TOKEN")
 
 # フォルダ作成
 os.makedirs(LOCAL_RAW_IMG_DIR, exist_ok=True)
@@ -67,7 +73,7 @@ def create_client(host, user, password):
         return None
 
 def sync_time():
-    """PCの時刻をロボットに強制同期させる (sudo使用)"""
+    """PCの時刻をロボットに強制同期させる"""
     now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     print(f"🕒 時刻合わせを開始します... ({now_str})")
     
@@ -75,12 +81,10 @@ def sync_time():
         client = create_client(conf["host"], conf["user"], conf["pass"])
         if client:
             try:
-                # sudo date -s "..." コマンドを実行
                 cmd = f'sudo -S date -s "{now_str}"'
                 stdin, stdout, stderr = client.exec_command(cmd)
                 stdin.write(conf["pass"] + '\n')
                 stdin.flush()
-                
                 err = stderr.read().decode()
                 if err and "password" not in err:
                     print(f"  ❌ [{name}] 同期失敗: {err.strip()}")
@@ -92,7 +96,7 @@ def sync_time():
                 client.close()
 
 def download_csv():
-    """XavierからCSVをダウンロード（上書き）"""
+    """XavierからCSVをダウンロード"""
     conf = ROBOT_CONFIG["xavier"]
     client = create_client(conf["host"], conf["user"], conf["pass"])
     if client:
@@ -108,7 +112,6 @@ def download_images(downloaded_images: Set[str]):
     """TX2から全jpgをraw_imagesへダウンロード"""
     conf = ROBOT_CONFIG["tx2"]
     client = create_client(conf["host"], conf["user"], conf["pass"])
-    
     if client:
         try:
             stdin, stdout, stderr = client.exec_command(f"ls {conf['remote_img_dir']}")
@@ -116,10 +119,8 @@ def download_images(downloaded_images: Set[str]):
             
             with SCPClient(client.get_transport()) as scp:
                 for file in files:
-                    if not file.endswith(".jpg"):
-                        continue
-                    if file in downloaded_images:
-                        continue
+                    if not file.endswith(".jpg"): continue
+                    if file in downloaded_images: continue
 
                     local_path = os.path.join(LOCAL_RAW_IMG_DIR, file)
                     if os.path.exists(local_path):
@@ -130,134 +131,153 @@ def download_images(downloaded_images: Set[str]):
                     scp.get(remote_path, local_path)
                     downloaded_images.add(file)
                     print(f"📸 新着画像GET(raw): {file}")
-        except Exception as e:
+        except Exception:
             pass
         finally:
             client.close()
 
 def _atomic_replace(tmp_path: str, final_path: str) -> None:
-    """テンポラリ→本番へ原子的に差し替える"""
     os.replace(tmp_path, final_path)
 
 def _scp_get_atomic(scp: SCPClient, remote_path: str, local_path: str) -> None:
-    """SCPでDL→サイズ検証→原子的に配置"""
     tmp_path = f"{local_path}.tmp"
     scp.get(remote_path, tmp_path)
     if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) <= 0:
-        raise RuntimeError(f"download failed or empty: {remote_path}")
+        raise RuntimeError(f"DL failed: {remote_path}")
     _atomic_replace(tmp_path, local_path)
 
 def _parse_map_yaml_image(local_yaml_path: str) -> Optional[str]:
-    """
-    map.yaml から image: をざっくり抜き出す（ダミー運用でも動く簡易パーサー）
-    TODO(後で修正): YAML仕様に厳密にするなら PyYAML を使う
-    """
     try:
         with open(local_yaml_path, "r", encoding="utf-8") as f:
             for raw in f:
                 line = raw.strip()
-                if not line or line.startswith("#"):
-                    continue
                 if line.startswith("image:"):
                     value = line.split(":", 1)[1].strip()
-                    if "#" in value:
-                        value = value.split("#", 1)[0].strip()
-                    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
-                        value = value[1:-1]
-                    return value or None
+                    if "#" in value: value = value.split("#", 1)[0].strip()
+                    return value.strip("\"'") or None
     except Exception:
         return None
     return None
 
 def _convert_to_static_png(local_image_path: str) -> bool:
-    """地図画像(pgm/png等)を static/map.png に変換して配置"""
-    if Image is None:
-        print("⚠️ Pillow 未導入のため、地図画像変換をスキップします（`pip install Pillow`）")
-        return False
-
+    if Image is None: return False
     tmp_png = f"{STATIC_MAP_PNG}.tmp"
     try:
         with Image.open(local_image_path) as img:
-            # PGMはL(8bit)のことが多い。Web表示用にRGBへ。
             if img.mode not in ("RGB", "RGBA"):
                 img = img.convert("RGB")
             img.save(tmp_png)
-        if os.path.getsize(tmp_png) <= 0:
-            raise RuntimeError("converted png is empty")
         _atomic_replace(tmp_png, STATIC_MAP_PNG)
         return True
-    except Exception as e:
-        try:
-            if os.path.exists(tmp_png):
-                os.remove(tmp_png)
-        except Exception:
-            pass
-        print(f"⚠️ 地図画像の変換に失敗: {e}")
+    except Exception:
         return False
 
 def download_map():
-    """地図(yaml+画像)をDLし、PNGに変換して配置する"""
+    """地図データのダウンロードと変換"""
     conf = ROBOT_CONFIG["xavier"]
     client = create_client(conf["host"], conf["user"], conf["pass"])
-    
     if client:
         try:
             with SCPClient(client.get_transport()) as scp:
-                # 1) まず map.yaml をDL（原子的に配置）
                 _scp_get_atomic(scp, conf["remote_map_yaml"], LOCAL_MAP_YAML)
-
-                # 2) yaml内の image: を見て地図画像のリモートパスを決める
+                
                 image_from_yaml = _parse_map_yaml_image(LOCAL_MAP_YAML)
                 if image_from_yaml:
                     if os.path.isabs(image_from_yaml):
                         remote_image = image_from_yaml
                     else:
-                        remote_yaml_dir = os.path.dirname(conf["remote_map_yaml"])
-                        remote_image = os.path.join(remote_yaml_dir, image_from_yaml)
+                        remote_image = os.path.join(os.path.dirname(conf["remote_map_yaml"]), image_from_yaml)
                 else:
-                    # TODO(後で修正): Jetson側の地図出力が確定したら、fallbackの必要性を再検討
                     remote_image = conf.get("remote_map_image_fallback")
 
-                if not remote_image:
-                    return
-
-                # 3) 画像もDL（拡張子を保持）
-                _, ext = os.path.splitext(remote_image)
-                local_image_path = f"{LOCAL_MAP_IMAGE}{ext or '.pgm'}"
-                _scp_get_atomic(scp, remote_image, local_image_path)
-
-                # 4) Web表示用に static/map.png を作成
-                if _convert_to_static_png(local_image_path):
-                    # print("🗺️ 地図更新完了") # 頻繁に出るとうるさい場合はコメントアウト
-                    pass
+                if remote_image:
+                    _, ext = os.path.splitext(remote_image)
+                    local_image_path = f"{LOCAL_MAP_IMAGE}{ext or '.pgm'}"
+                    _scp_get_atomic(scp, remote_image, local_image_path)
+                    _convert_to_static_png(local_image_path)
         except Exception as e:
-            # 地図がまだ無い/権限不足など。無視しつつ、原因が追える程度には出す。
-            print(f"⚠️ 地図同期に失敗: {e}")
+            print(f"⚠️ 地図同期失敗: {e}")
         finally:
             client.close()
 
+# --- クラウド送信ヘルパー (復活機能) ---
+def _remote_enabled() -> bool:
+    return bool(REMOTE_APP_URL and INGEST_TOKEN and requests)
+
+def _remote_post_file(endpoint: str, path: str) -> bool:
+    """指定したファイルをクラウドへアップロード"""
+    if not _remote_enabled() or not os.path.exists(path):
+        return False
+    
+    url = urljoin(REMOTE_APP_URL.rstrip("/") + "/", endpoint.lstrip("/"))
+    headers = {"X-Ingest-Token": INGEST_TOKEN}
+    
+    try:
+        with open(path, "rb") as f:
+            files = {"file": (os.path.basename(path), f)}
+            # タイムアウト短めで設定（メインループを止めないため）
+            r = requests.post(url, headers=headers, files=files, timeout=5)
+        return r.status_code < 300
+    except Exception:
+        return False
+
 def main():
-    print("=== 🤖 ロボットデータ完全同期システム 🤖 ===")
+    print("=== 🤖 ロボットデータ完全同期システム (Relay Node) 🤖 ===")
     print(f"保存先: {LOCAL_DIR}")
     
-    # 1. 最初に時刻合わせ
+    if _remote_enabled():
+        print(f"🌐 クラウド連携: 有効 ({REMOTE_APP_URL})")
+    else:
+        print("⚠️ クラウド連携: 無効 (設定不足 または requestsなし)")
+
     sync_time()
     
-    print("\n📡 監視とダウンロードを開始します (Ctrl+Cで停止)")
+    print("\n📡 監視・ダウンロード・クラウド同期を開始します...")
+    
     last_map_sync = 0.0
     downloaded_images: Set[str] = set()
+    
+    # クラウド送信の重複防止用タイムスタンプ
+    last_uploaded_csv_mtime: Optional[float] = None
+    last_uploaded_map_yaml_mtime: Optional[float] = None
+    last_uploaded_map_png_mtime: Optional[float] = None
 
     try:
         while True:
-            download_csv()    # ログ回収
-            download_images(downloaded_images) # 画像回収（全jpg）
-            # 地図は低頻度で回収（毎秒だと無駄が多い）
+            # 1. ロボットからダウンロード
+            download_csv()
+            download_images(downloaded_images)
+            
             now = time.time()
             if now - last_map_sync >= MAP_SYNC_INTERVAL_SEC:
-                download_map()    # 地図回収 & 変換
+                download_map()
                 last_map_sync = now
+
+            # 2. クラウドへアップロード (位置情報と地図のみ)
+            # ※ 画像のアップロードは ai_worker.py が担当するためここでは行わない
+            if _remote_enabled():
+                # Tracking CSV (位置情報)
+                if os.path.exists(LOCAL_CSV):
+                    mtime = os.path.getmtime(LOCAL_CSV)
+                    if last_uploaded_csv_mtime != mtime:
+                        if _remote_post_file("api/ingest/tracking", LOCAL_CSV):
+                            last_uploaded_csv_mtime = mtime
+                            # print("☁️ 位置情報を送信しました")
+
+                # Map YAML & PNG (地図更新時のみ)
+                if os.path.exists(LOCAL_MAP_YAML):
+                    mtime = os.path.getmtime(LOCAL_MAP_YAML)
+                    if last_uploaded_map_yaml_mtime != mtime:
+                        if _remote_post_file("api/ingest/map_yaml", LOCAL_MAP_YAML):
+                            last_uploaded_map_yaml_mtime = mtime
+
+                if os.path.exists(STATIC_MAP_PNG):
+                    mtime = os.path.getmtime(STATIC_MAP_PNG)
+                    if last_uploaded_map_png_mtime != mtime:
+                        if _remote_post_file("api/ingest/map_png", STATIC_MAP_PNG):
+                            last_uploaded_map_png_mtime = mtime
             
-            time.sleep(1)     # 1秒待機
+            time.sleep(1)
             
     except KeyboardInterrupt:
         print("\n🛑 停止しました")
