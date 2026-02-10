@@ -112,3 +112,18 @@ python sync_robots.py
 - `POST /api/ingest/map_yaml`（multipart file）
 - `POST /api/ingest/map_png`（multipart file）
 - `POST /api/ingest/reset`（通知/処理済みリセット）
+
+### 2DLidar地図(PNG)の見やすさ調整（任意）
+
+`/api/ingest/map_png` にアップロードされた地図画像は、デフォルトで「線画っぽく見やすくする前処理」をかけてから `static/map.png` に保存します（Pillowが無い環境では自動的に無加工になります）。
+
+環境変数（任意）:
+- `MAP_PREPROCESS=1/0`（前処理の有効/無効）
+- `MAP_OCC_THRESHOLD=0..255`（占有(黒)判定の閾値。小さいほど“黒が減る”）
+- `MAP_FREE_THRESHOLD=0..255`（自由(白)判定の閾値）
+- `MAP_MEDIAN_SIZE=1..9`（ノイズ低減。奇数推奨、例:3）
+- `MAP_OPEN_PX=0..4`（小さいゴミを落とす強さ）
+- `MAP_CLOSE_PX=0..6`（壁の切れ目を繋ぐ強さ）
+- `MAP_EDGE=1/0`（輪郭線のみ描く）
+- `MAP_EDGE_THICKEN_PX=0..6`（輪郭線を太くする）
+- `MAP_KEEP_RAW=1/0`（`static/map.png.raw.png` にraw退避）

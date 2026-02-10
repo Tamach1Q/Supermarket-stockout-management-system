@@ -197,6 +197,26 @@
             width: 100%; padding: 10px; margin: 15px 0;
             border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; font-size: 1rem;
         }
+        .modal .row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin: 10px 0 15px;
+        }
+        .modal .row label {
+            font-size: 0.9rem;
+            color: #555;
+        }
+        .modal input[type="color"] {
+            width: 56px;
+            height: 36px;
+            padding: 0;
+            border-radius: 6px;
+            border: 1px solid #ccc;
+            margin: 0;
+            cursor: pointer;
+        }
         .modal-buttons { display: flex; gap: 10px; justify-content: flex-end; }
 
         /* レスポンシブ */
@@ -245,6 +265,10 @@
         <h3>エリア設定</h3>
         <p>選択した範囲のエリア名を入力してください</p>
         <input type="text" id="areaNameInput" placeholder="例: カップ麺コーナー" autocomplete="off">
+        <div class="row">
+            <label for="areaColorInput">色</label>
+            <input type="color" id="areaColorInput" value="#e63946">
+        </div>
         <div class="modal-buttons">
             <button onclick="closeModal()" style="background:#ccc; color:#333;">キャンセル</button>
             <button class="btn-primary" onclick="confirmArea()">決定</button>
@@ -258,15 +282,55 @@
     const ctx = canvas.getContext('2d');
     const statusBadge = document.getElementById('status-badge');
     const notificationList = document.getElementById('notification-list');
+    const BASE_W = Number(canvas.getAttribute('width') || 600);
+    const BASE_H = Number(canvas.getAttribute('height') || 400);
     
     // モーダル関連
     const modal = document.getElementById('areaModal');
     const nameInput = document.getElementById('areaNameInput');
+    const colorInput = document.getElementById('areaColorInput');
     let tempRect = null; // エリア確定前の矩形情報
+    let editingIndex = null;
 
     let areas = [];
     let isDrawing = false;
     let startX, startY, currentX, currentY;
+
+    const PALETTE = [
+        '#2563eb', // blue
+        '#16a34a', // green
+        '#e11d48', // rose
+        '#f59e0b', // amber
+        '#7c3aed', // violet
+        '#0891b2', // cyan
+        '#dc2626', // red
+    ];
+    let paletteCursor = 0;
+
+    function nextColor() {
+        const c = PALETTE[paletteCursor % PALETTE.length];
+        paletteCursor += 1;
+        return c;
+    }
+
+    function hexToRgba(hex, alpha) {
+        const h = String(hex || '').replace('#', '').trim();
+        if (h.length !== 6) return `rgba(230,57,70,${alpha})`;
+        const r = parseInt(h.slice(0, 2), 16);
+        const g = parseInt(h.slice(2, 4), 16);
+        const b = parseInt(h.slice(4, 6), 16);
+        return `rgba(${r},${g},${b},${alpha})`;
+    }
+
+    function setupCanvasDpr() {
+        const dpr = window.devicePixelRatio || 1;
+        canvas.style.width = BASE_W + 'px';
+        canvas.style.height = BASE_H + 'px';
+        canvas.width = Math.max(1, Math.round(BASE_W * dpr));
+        canvas.height = Math.max(1, Math.round(BASE_H * dpr));
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // 以降はCSSピクセル座標で描く
+        draw();
+    }
 
     // === 地図画像の読み込み ===
     const mapImg = new Image();
@@ -292,8 +356,8 @@
     };
     mapImg.onerror = () => {
         useFallbackMap = true;
-        mapNaturalW = canvas.width;
-        mapNaturalH = canvas.height;
+        mapNaturalW = BASE_W;
+        mapNaturalH = BASE_H;
         if (!didInitAreas) {
             didInitAreas = true;
             loadAreas();
@@ -359,11 +423,28 @@
         const x = Math.min(startX, currentX);
         const y = Math.min(startY, currentY);
 
-        if (w < 10 || h < 10) { draw(); return; } // 小さすぎる場合は無視
+        if (w < 10 || h < 10) {
+            // クリック扱い：既存エリアの編集
+            const px = currentX;
+            const py = currentY;
+            for (let i = areas.length - 1; i >= 0; i--) {
+                const a = areas[i];
+                if (!a) continue;
+                if (a.x <= px && px <= a.x + a.w && a.y <= py && py <= a.y + a.h) {
+                    tempRect = { x: a.x, y: a.y, w: a.w, h: a.h };
+                    editingIndex = i;
+                    openModal(a.name || '', a.color || nextColor());
+                    return;
+                }
+            }
+            draw();
+            return;
+        } // 小さすぎる場合は無視
 
         // モーダルを開いて名前を入力させる
         tempRect = { x, y, w, h };
-        openModal();
+        editingIndex = null;
+        openModal('', nextColor());
     }
 
     // イベントリスナー登録
@@ -377,26 +458,29 @@
 
     // === 描画レンダリング ===
     function draw() {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.clearRect(0, 0, BASE_W, BASE_H);
         
         // 1. 地図描画
         if (!useFallbackMap && mapImg.complete && mapImg.naturalWidth > 0) {
-            ctx.drawImage(mapImg, 0, 0, canvas.width, canvas.height);
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            ctx.drawImage(mapImg, 0, 0, BASE_W, BASE_H);
         } else {
             drawFallbackMap();
         }
 
         // 2. 保存済みエリア描画
         areas.forEach(a => {
-            ctx.fillStyle = 'rgba(230, 57, 70, 0.2)'; // 薄い赤
-            ctx.strokeStyle = '#e63946';
+            const stroke = a.color || '#e63946';
+            ctx.fillStyle = hexToRgba(stroke, 0.18);
+            ctx.strokeStyle = stroke;
             ctx.lineWidth = 2;
             ctx.fillRect(a.x, a.y, a.w, a.h);
             ctx.strokeRect(a.x, a.y, a.w, a.h);
             
             // エリア名ラベル
-            ctx.fillStyle = '#e63946';
-            ctx.font = 'bold 14px sans-serif';
+            ctx.fillStyle = stroke;
+            ctx.font = '700 14px ui-sans-serif, system-ui, -apple-system, "Hiragino Sans", Meiryo, Arial, sans-serif';
             ctx.textBaseline = 'bottom';
             ctx.fillText(a.name, a.x, a.y - 4);
         });
@@ -404,7 +488,7 @@
 
     function drawFallbackMap() {
         ctx.fillStyle = '#f0f0f0';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillRect(0, 0, BASE_W, BASE_H);
         // 棚のダミー
         ctx.fillStyle = '#dcdcdc';
         ctx.fillRect(50, 50, 100, 200);
@@ -415,12 +499,13 @@
         ctx.fillText('Shelf B', 260, 150);
         ctx.font = '12px sans-serif';
         ctx.fillStyle = '#aaa';
-        ctx.fillText('No Map Image', 10, 390);
+        ctx.fillText('No Map Image', 10, BASE_H - 10);
     }
 
     // === モーダル操作 ===
-    function openModal() {
-        nameInput.value = '';
+    function openModal(name = '', color = '#e63946') {
+        nameInput.value = name;
+        colorInput.value = color;
         modal.classList.add('open');
         setTimeout(() => nameInput.focus(), 100); // フォーカス設定
     }
@@ -428,13 +513,19 @@
     function closeModal() {
         modal.classList.remove('open');
         tempRect = null;
+        editingIndex = null;
         draw(); // キャンセル時は線を消す
     }
 
     function confirmArea() {
         const name = nameInput.value.trim();
         if (name && tempRect) {
-            areas.push({ ...tempRect, name });
+            const color = (colorInput && colorInput.value) ? colorInput.value : '#e63946';
+            if (editingIndex !== null && editingIndex !== undefined) {
+                areas[editingIndex] = { ...tempRect, name, color };
+            } else {
+                areas.push({ ...tempRect, name, color });
+            }
             saveAreas(); // 追加後即保存
         }
         closeModal();
@@ -463,17 +554,18 @@
 
     function _looksLegacyCanvasCoords(list) {
         const { maxX, maxY } = _maxExtent(list);
-        return maxX <= canvas.width * 1.05 && maxY <= canvas.height * 1.05;
+        return maxX <= BASE_W * 1.05 && maxY <= BASE_H * 1.05;
     }
 
     function _toCanvasAreas(storageAreas) {
         if (!Array.isArray(storageAreas)) return [];
         if (_looksLegacyCanvasCoords(storageAreas)) return storageAreas;
 
-        const sx = canvas.width / (mapNaturalW || canvas.width);
-        const sy = canvas.height / (mapNaturalH || canvas.height);
+        const sx = BASE_W / (mapNaturalW || BASE_W);
+        const sy = BASE_H / (mapNaturalH || BASE_H);
         return storageAreas.map(a => ({
             name: (a && typeof a.name === 'string') ? a.name : '',
+            color: (a && typeof a.color === 'string') ? a.color : '#e63946',
             x: (Number(a.x) || 0) * sx,
             y: (Number(a.y) || 0) * sy,
             w: (Number(a.w) || 0) * sx,
@@ -483,10 +575,11 @@
 
     function _toStorageAreas(canvasAreas) {
         if (!Array.isArray(canvasAreas)) return [];
-        const sx = (mapNaturalW || canvas.width) / canvas.width;
-        const sy = (mapNaturalH || canvas.height) / canvas.height;
+        const sx = (mapNaturalW || BASE_W) / BASE_W;
+        const sy = (mapNaturalH || BASE_H) / BASE_H;
         return canvasAreas.map(a => ({
             name: (a && typeof a.name === 'string') ? a.name : '',
+            color: (a && typeof a.color === 'string') ? a.color : '#e63946',
             x: (Number(a.x) || 0) * sx,
             y: (Number(a.y) || 0) * sy,
             w: (Number(a.w) || 0) * sx,
@@ -596,6 +689,8 @@
 
     // 初期化（エリア読込は map.png 読み込み後に実行）
     updateNotifications();
+    setupCanvasDpr();
+    window.addEventListener('resize', () => setupCanvasDpr());
 
 </script>
 </body>

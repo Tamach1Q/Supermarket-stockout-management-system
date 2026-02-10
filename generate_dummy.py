@@ -10,6 +10,12 @@ except Exception:
     print("Pillowが必要です。pip install Pillowを実行してください")
     raise SystemExit
 
+# 2DLidar/SLAM地図と同じ見やすさ前処理（Pillowが無い環境ではgenerate_dummy自体が動かないので基本は有効）
+try:
+    from map_preprocess import MapPreprocessConfig, load_config_from_env, preprocess_map_png  # type: ignore
+except Exception:
+    preprocess_map_png = None  # type: ignore
+
 # フォルダ作成
 os.makedirs("store_data/images", exist_ok=True)
 os.makedirs("static", exist_ok=True)
@@ -27,6 +33,19 @@ SHELF_WIDTH = 2                  # 棚の線の太さ
 def create_floor_plan_map():
     img = Image.new("RGB", (WIDTH, HEIGHT), BG_COLOR)
     draw = ImageDraw.Draw(img)
+
+    # --- 0. 背景グリッド（エリア矩形を書きやすくするため） ---
+    # 生成ダミー専用。薄いグリッドなので棚/壁の線が主役になる。
+    grid_spacing = 25
+    major_every = 5
+    minor = (235, 235, 235)
+    major = (220, 220, 220)
+    for x in range(0, WIDTH + 1, grid_spacing):
+        color = major if (x // grid_spacing) % major_every == 0 else minor
+        draw.line([(x, 0), (x, HEIGHT)], fill=color, width=1)
+    for y in range(0, HEIGHT + 1, grid_spacing):
+        color = major if (y // grid_spacing) % major_every == 0 else minor
+        draw.line([(0, y), (WIDTH, y)], fill=color, width=1)
 
     # --- 1. 外壁を描く ---
     # 画面縁から少し余白を取って枠線を描く
@@ -103,8 +122,35 @@ def create_floor_plan_map():
     draw.line([(door_x, door_y + door_size), (door_x - door_size, door_y + door_size)], fill=LINE_COLOR, width=2)
 
     # 保存
-    img.save("static/map.png")
-    print("✅ 線画スタイルのフロアマップを生成しました: static/map.png")
+    out_path = "static/map.png"
+    img.save(out_path)
+
+    # ingest_map_png と同じ前処理を適用（MAP_PREPROCESS=0 で無効化可能）
+    preprocessed = False
+    if preprocess_map_png is not None:
+        try:
+            # generate_dummy は元が線画なので、ノイズ除去(open/close)を強くかけると細い棚線が消えることがある。
+            # 見やすさ（線画化）だけ維持しつつ、棚線は残す安全側プリセットにする。
+            base = load_config_from_env()
+            safe_cfg = MapPreprocessConfig(
+                enabled=base.enabled,
+                occ_threshold=base.occ_threshold,
+                free_threshold=base.free_threshold,
+                median_size=1,
+                open_px=0,
+                close_px=0,
+                edge=False,
+                edge_thicken_px=base.edge_thicken_px,
+                keep_raw=base.keep_raw,
+            )
+            preprocessed = bool(preprocess_map_png(out_path, out_path, config=safe_cfg))
+        except Exception:
+            preprocessed = False
+
+    if preprocessed:
+        print("✅ 線画スタイルのフロアマップを生成＆前処理しました: static/map.png")
+    else:
+        print("✅ 線画スタイルのフロアマップを生成しました: static/map.png")
 
 def create_dummy_data():
     now = time.time()

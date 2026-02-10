@@ -67,6 +67,27 @@
     #areaName:focus {
       border-color: rgba(0,0,0,0.25);
     }
+    #areaMeta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 10px;
+    }
+    #areaMeta label {
+      font-size: 13px;
+      color: rgba(0,0,0,0.65);
+      font-weight: 600;
+    }
+    #areaColor {
+      width: 56px;
+      height: 36px;
+      padding: 0;
+      border-radius: 10px;
+      border: 1px solid rgba(0,0,0,0.12);
+      background: #fff;
+      cursor: pointer;
+    }
     #modalActions {
       display: flex;
       gap: 10px;
@@ -100,6 +121,10 @@
   <div id="modal" aria-hidden="true">
     <div id="modalCard">
       <input id="areaName" type="text" autocomplete="off" placeholder="エリア名" />
+      <div id="areaMeta">
+        <label for="areaColor">色</label>
+        <input id="areaColor" type="color" value="#2563eb" />
+      </div>
       <div id="modalActions">
         <button class="btn secondary" id="cancelBtn" type="button">キャンセル</button>
         <button class="btn primary" id="okBtn" type="button">決定</button>
@@ -117,6 +142,7 @@
 
     const modal = document.getElementById('modal');
     const areaNameInput = document.getElementById('areaName');
+    const areaColorInput = document.getElementById('areaColor');
     const cancelBtn = document.getElementById('cancelBtn');
     const okBtn = document.getElementById('okBtn');
 
@@ -126,6 +152,32 @@
     let mapH = 650;
 
     let areas = [];
+
+    const PALETTE = [
+      '#2563eb', // blue
+      '#16a34a', // green
+      '#e11d48', // rose
+      '#f59e0b', // amber
+      '#7c3aed', // violet
+      '#0891b2', // cyan
+      '#dc2626', // red
+    ];
+    let paletteCursor = 0;
+
+    function nextColor() {
+      const c = PALETTE[paletteCursor % PALETTE.length];
+      paletteCursor += 1;
+      return c;
+    }
+
+    function hexToRgba(hex, alpha) {
+      const h = String(hex || '').replace('#', '').trim();
+      if (h.length !== 6) return `rgba(37,99,235,${alpha})`;
+      const r = parseInt(h.slice(0, 2), 16);
+      const g = parseInt(h.slice(2, 4), 16);
+      const b = parseInt(h.slice(4, 6), 16);
+      return `rgba(${r},${g},${b},${alpha})`;
+    }
 
     const view = {
       scale: 1,
@@ -317,8 +369,9 @@
         const sw = a.w * view.scale;
         const sh = a.h * view.scale;
 
-        ctx.fillStyle = 'rgba(59, 130, 246, 0.14)';
-        ctx.strokeStyle = 'rgba(59, 130, 246, 0.95)';
+        const stroke = a.color || '#2563eb';
+        ctx.fillStyle = hexToRgba(stroke, 0.14);
+        ctx.strokeStyle = stroke;
         ctx.lineWidth = 2;
         ctx.fillRect(sx, sy, sw, sh);
         ctx.strokeRect(sx, sy, sw, sh);
@@ -346,6 +399,7 @@
       modal.classList.add('open');
       modal.setAttribute('aria-hidden', 'false');
       areaNameInput.value = '';
+      areaColorInput.value = nextColor();
       setTimeout(() => areaNameInput.focus(), 0);
     }
 
@@ -389,6 +443,7 @@
       const sy = mapH / LEGACY_CANVAS_H;
       return data.map(a => ({
         name: (a && typeof a.name === 'string') ? a.name : '',
+        color: (a && typeof a.color === 'string') ? a.color : '#2563eb',
         x: (Number(a.x) || 0) * sx,
         y: (Number(a.y) || 0) * sy,
         w: (Number(a.w) || 0) * sx,
@@ -587,7 +642,8 @@
         closeModal();
         return;
       }
-      areas.push({ ...pendingRect, name });
+      const color = (areaColorInput && areaColorInput.value) ? areaColorInput.value : '#2563eb';
+      areas.push({ ...pendingRect, name, color });
       pendingRect = null;
       closeModal();
       saveAreas();
@@ -679,4 +735,3 @@
   </script>
 </body>
 </html>
-

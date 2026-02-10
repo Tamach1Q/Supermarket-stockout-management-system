@@ -10,6 +10,12 @@ from flask import Flask, render_template, request, jsonify, send_from_directory,
 
 app = Flask(__name__)
 
+# 2DLidar/SLAMの地図PNGを見やすくする前処理（Pillowが無い環境では自動スキップ）
+try:
+    from map_preprocess import preprocess_map_png  # type: ignore
+except Exception:
+    preprocess_map_png = None  # type: ignore
+
 # --- 設定 ---
 DATA_DIR = os.environ.get("DATA_DIR", "./store_data")
 IMG_DIR = os.path.join(DATA_DIR, "images")
@@ -394,10 +400,16 @@ def ingest_map_png():
     Path(os.path.dirname(MAP_PNG_FILE) or ".").mkdir(parents=True, exist_ok=True)
     tmp_path = f"{MAP_PNG_FILE}.tmp"
     f.save(tmp_path)
+    processed = False
+    if preprocess_map_png is not None:
+        try:
+            processed = bool(preprocess_map_png(tmp_path, tmp_path))
+        except Exception:
+            processed = False
     os.replace(tmp_path, MAP_PNG_FILE)
     # 次ループでサイズ反映させる
     converter.reload_if_needed(force=True)
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "ok", "preprocessed": processed})
 
 @app.route('/api/ingest/map_yaml', methods=['POST'])
 def ingest_map_yaml():
