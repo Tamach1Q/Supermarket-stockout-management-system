@@ -23,6 +23,7 @@ LOG_FILE = os.path.join(DATA_DIR, "tracking.csv")
 MAP_YAML_FILE = os.path.join(DATA_DIR, "map.yaml") # 地図の設定ファイル
 MAP_PNG_FILE = os.environ.get("MAP_PNG_FILE", os.path.join("static", "map.png"))   # Web表示用の地図画像
 AREAS_FILE = os.environ.get("AREAS_FILE", os.path.join(DATA_DIR, "areas.json")) # エリア設定の保存先
+STATUS_FILE = os.path.join(DATA_DIR, "status.json")  # 検知ON/OFF状態の保存先
 
 # ディレクトリ作成（Render等の初回起動でも落ちないように）
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -35,6 +36,7 @@ notifications = [] # 画面に表示する通知リスト
 processed_files = set()
 notifications_lock = threading.Lock()
 processed_files_lock = threading.Lock()
+detection_state_lock = threading.Lock()
 MAX_NOTIFICATIONS = int(os.environ.get("MAX_NOTIFICATIONS", "200"))
 MAX_PROCESSED_FILES = int(os.environ.get("MAX_PROCESSED_FILES", "5000"))
 
@@ -49,6 +51,67 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH_MB * 1024 * 1024
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "5000"))
 DEBUG = os.environ.get("FLASK_DEBUG", "0") == "1"
+
+
+def _normalize_detection_state(raw) -> dict:
+    active = False
+    updated_at: Optional[float] = None
+
+    if isinstance(raw, bool):
+        active = raw
+    elif isinstance(raw, (int, float)):
+        active = bool(raw)
+    if isinstance(raw, dict):
+        active = bool(raw.get("active", False))
+        raw_updated_at = raw.get("updated_at")
+        if raw_updated_at is not None:
+            try:
+                updated_at = float(raw_updated_at)
+            except Exception:
+                updated_at = None
+
+    return {
+        "active": active,
+        "updated_at": updated_at,
+    }
+
+
+def _read_detection_state_unlocked() -> dict:
+    if not os.path.exists(STATUS_FILE):
+        return _normalize_detection_state(None)
+
+    try:
+        with open(STATUS_FILE, "r", encoding="utf-8") as f:
+            return _normalize_detection_state(json.load(f))
+    except Exception:
+        return _normalize_detection_state(None)
+
+
+def get_detection_state() -> dict:
+    with detection_state_lock:
+        return _read_detection_state_unlocked()
+
+
+def set_detection_state(active: bool) -> dict:
+    state = {
+        "active": bool(active),
+        "updated_at": time.time(),
+    }
+    with detection_state_lock:
+        Path(os.path.dirname(STATUS_FILE) or ".").mkdir(parents=True, exist_ok=True)
+        tmp_path = f"{STATUS_FILE}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False)
+        os.replace(tmp_path, STATUS_FILE)
+    return state
+
+
+def initialize_detection_state() -> None:
+    """アプリ起動時は必ず停止状態から開始する"""
+    set_detection_state(False)
+
+
+initialize_detection_state()
 
 # --- ユーティリティ ---
 def _parse_map_yaml_simple(path: str) -> Tuple[Optional[float], Optional[list]]:
@@ -176,6 +239,11 @@ def monitoring_task():
     while True:
         # 地図設定を再読み込み（SLAMで地図が更新される可能性があるため）
         converter.reload_if_needed()
+
+        # 検知停止中は通知生成処理を行わず待機
+        if not get_detection_state().get("active", False):
+            time.sleep(1)
+            continue
 
         try:
             # 1. 画像フォルダを見る
@@ -326,6 +394,28 @@ def get_notifications():
     with notifications_lock:
         snapshot = list(notifications)
     return jsonify(snapshot)
+
+
+@app.route('/api/detection/status')
+def get_detection_status():
+    """欠品検知の現在状態を返す"""
+    state = get_detection_state()
+    return jsonify(state)
+
+
+@app.route('/api/detection/control', methods=['POST'])
+def control_detection():
+    """欠品検知の開始/停止を切り替える"""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or "active" not in data:
+        return jsonify({"status": "error", "message": "active required"}), 400
+
+    active = data.get("active")
+    if not isinstance(active, bool):
+        return jsonify({"status": "error", "message": "active must be bool"}), 400
+
+    state = set_detection_state(active)
+    return jsonify({"status": "ok", **state})
 
 @app.route('/images/<path:filename>')
 def get_image(filename: str):

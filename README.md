@@ -10,7 +10,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 # ダミーデータ生成（任意）
-python generate_dummy.py
+python make_demo_data.py
 
 # 起動
 python app.py
@@ -88,7 +88,7 @@ python sync_robots.py
 これで `tracking.csv` / `store_data/images/*.jpg` / `store_data/map.yaml` / `static/map.png` をRenderへ送ります。
 
 注意:
-- 会場でRenderにアクセスできない時に備えて、`generate_dummy.py` でローカルデモできる状態も用意しておくと安全です。
+- 会場でRenderにアクセスできない時に備えて、`make_demo_data.py` でローカルデモできる状態も用意しておくと安全です。
 
 ## ロボットからの同期（任意）
 
@@ -101,6 +101,8 @@ python sync_robots.py
 - `POST /api/save_areas` エリア保存
 - `GET /api/load_areas` エリア取得
 - `GET /api/notifications` 通知取得
+- `GET /api/detection/status` 欠品検知状態の取得
+- `POST /api/detection/control` 欠品検知の開始/停止
 - `GET /healthz` ヘルスチェック
 
 ### 取り込みAPI（クラウド連携用）

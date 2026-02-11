@@ -33,10 +33,10 @@ ROBOT_CONFIG = {
     },
     # Webカメラロボット (TX2)
     "tx2": {
-        "host": "192.168.1.11",   # IPアドレス
-        "user": "jetson",         # ユーザー名
-        "pass": "jetson",         # パスワード
-        "remote_img_dir": "/home/jetson/images/"       # 画像フォルダ
+        "host": "172.16.11.121",
+        "user": "kauelu",
+        "pass": "Kauelu203",
+        "remote_img_dir": "/home/kauelu/images/"  # ← ここを修正
     }
 }
 

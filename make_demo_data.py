@@ -10,7 +10,7 @@ except Exception:
     print("Pillowが必要です。pip install Pillowを実行してください")
     raise SystemExit
 
-# 2DLidar/SLAM地図と同じ見やすさ前処理（Pillowが無い環境ではgenerate_dummy自体が動かないので基本は有効）
+# 2DLidar/SLAM地図と同じ見やすさ前処理（Pillowが無い環境ではmake_demo_data自体が動かないので基本は有効）
 try:
     from map_preprocess import MapPreprocessConfig, load_config_from_env, preprocess_map_png  # type: ignore
 except Exception:
@@ -129,7 +129,7 @@ def create_floor_plan_map():
     preprocessed = False
     if preprocess_map_png is not None:
         try:
-            # generate_dummy は元が線画なので、ノイズ除去(open/close)を強くかけると細い棚線が消えることがある。
+            # make_demo_data は元が線画なので、ノイズ除去(open/close)を強くかけると細い棚線が消えることがある。
             # 見やすさ（線画化）だけ維持しつつ、棚線は残す安全側プリセットにする。
             base = load_config_from_env()
             safe_cfg = MapPreprocessConfig(

@@ -1,4 +1,5 @@
 import os
+import json
 import re
 import shutil
 import time
@@ -19,6 +20,7 @@ CONF_THRESHOLD = 0.5
 RAW_DIR = "./store_data/raw_images"
 TARGET_DIR = "./store_data/images"
 ARCHIVE_DIR = "./store_data/archive"
+STATUS_FILE = os.environ.get("DETECTION_STATUS_FILE", "./store_data/status.json")
 
 # Apple Silicon MPS
 DEVICE = "mps"
@@ -37,6 +39,21 @@ def ensure_dirs() -> None:
     os.makedirs(RAW_DIR, exist_ok=True)
     os.makedirs(TARGET_DIR, exist_ok=True)
     os.makedirs(ARCHIVE_DIR, exist_ok=True)
+
+
+def is_detection_active() -> bool:
+    if not os.path.exists(STATUS_FILE):
+        return False
+    try:
+        with open(STATUS_FILE, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        if isinstance(state, dict):
+            return bool(state.get("active", False))
+        if isinstance(state, (bool, int, float)):
+            return bool(state)
+        return False
+    except Exception:
+        return False
 
 
 def remote_enabled() -> bool:
@@ -165,9 +182,27 @@ def main() -> None:
 
     uploaded_images: set = set()
     last_archive_cleanup = 0.0
+    last_detection_active = None
 
     try:
         while True:
+            detection_active = is_detection_active()
+            if detection_active != last_detection_active:
+                if detection_active:
+                    print("▶ 欠品検知を開始しました")
+                else:
+                    print("⏸ 欠品検知は停止中です（raw_imagesに蓄積）")
+                last_detection_active = detection_active
+
+            if not detection_active:
+                upload_pending_defect_images(uploaded_images)
+                now = time.time()
+                if now - last_archive_cleanup >= ARCHIVE_CLEANUP_INTERVAL_SEC:
+                    cleanup_archive()
+                    last_archive_cleanup = now
+                time.sleep(POLL_INTERVAL_SEC)
+                continue
+
             files = sorted(f for f in os.listdir(RAW_DIR) if f.lower().endswith(".jpg"))
 
             for file_name in files:

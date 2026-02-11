@@ -133,6 +133,40 @@
             color: #555;
         }
         #status-badge.active { background: #d1fae5; color: #065f46; }
+        .detection-control {
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            background: #fff;
+        }
+        #detection-state {
+            font-size: 0.85rem;
+            font-weight: bold;
+            padding: 4px 8px;
+            border-radius: 12px;
+            white-space: nowrap;
+        }
+        #detection-state.on { background: #d1fae5; color: #065f46; }
+        #detection-state.off { background: #fee2e2; color: #991b1b; }
+        #detection-toggle-btn {
+            padding: 7px 12px;
+            font-size: 0.85rem;
+        }
+        #detection-toggle-btn.start {
+            background-color: var(--primary-color);
+            color: #fff;
+        }
+        #detection-toggle-btn.stop {
+            background-color: var(--danger-color);
+            color: #fff;
+        }
+        #detection-toggle-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
 
         #notification-list {
             list-style: none;
@@ -255,6 +289,10 @@
             <span class="panel-title">🔔 欠品アラート</span>
             <span id="status-badge">接続中...</span>
         </div>
+        <div class="detection-control">
+            <span id="detection-state" class="off">検知停止中</span>
+            <button id="detection-toggle-btn" class="start" onclick="toggleDetection()">欠品検知開始</button>
+        </div>
         <ul id="notification-list">
             </ul>
     </div>
@@ -282,6 +320,8 @@
     const ctx = canvas.getContext('2d');
     const statusBadge = document.getElementById('status-badge');
     const notificationList = document.getElementById('notification-list');
+    const detectionStateEl = document.getElementById('detection-state');
+    const detectionToggleBtn = document.getElementById('detection-toggle-btn');
     const BASE_W = Number(canvas.getAttribute('width') || 600);
     const BASE_H = Number(canvas.getAttribute('height') || 400);
     
@@ -295,6 +335,8 @@
     let areas = [];
     let isDrawing = false;
     let startX, startY, currentX, currentY;
+    let detectionActive = false;
+    let detectionBusy = false;
 
     const PALETTE = [
         '#2563eb', // blue
@@ -537,6 +579,55 @@
         if (e.key === 'Enter') confirmArea();
     });
 
+    function updateDetectionUi(active) {
+        detectionActive = !!active;
+        detectionStateEl.textContent = detectionActive ? '検知中' : '検知停止中';
+        detectionStateEl.className = detectionActive ? 'on' : 'off';
+        detectionToggleBtn.textContent = detectionActive ? '欠品検知停止' : '欠品検知開始';
+        detectionToggleBtn.className = detectionActive ? 'stop' : 'start';
+    }
+
+    async function fetchDetectionStatus() {
+        try {
+            const res = await fetch('/api/detection/status', { cache: 'no-store' });
+            if (!res.ok) throw new Error('status fetch failed');
+            const data = await res.json();
+            updateDetectionUi(Boolean(data.active));
+        } catch (e) {
+            detectionStateEl.textContent = '状態不明';
+            detectionStateEl.className = 'off';
+        }
+    }
+
+    async function toggleDetection() {
+        if (detectionBusy) return;
+        const nextActive = !detectionActive;
+        if (nextActive && areas.length === 0) {
+            alert('先にエリア矩形を1つ以上設定してください。');
+            return;
+        }
+
+        detectionBusy = true;
+        detectionToggleBtn.disabled = true;
+        try {
+            const res = await fetch('/api/detection/control', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ active: nextActive })
+            });
+            const data = await res.json();
+            if (!res.ok || data.status === 'error') {
+                throw new Error(data.message || 'control failed');
+            }
+            updateDetectionUi(Boolean(data.active));
+        } catch (e) {
+            alert('検知状態の更新に失敗しました');
+        } finally {
+            detectionBusy = false;
+            detectionToggleBtn.disabled = false;
+        }
+    }
+
     // === API通信 ===
     function _maxExtent(list) {
         let maxX = 0, maxY = 0;
@@ -686,8 +777,10 @@
 
     // 1秒ごとに更新
     setInterval(updateNotifications, 1000);
+    setInterval(fetchDetectionStatus, 3000);
 
     // 初期化（エリア読込は map.png 読み込み後に実行）
+    fetchDetectionStatus();
     updateNotifications();
     setupCanvasDpr();
     window.addEventListener('resize', () => setupCanvasDpr());
